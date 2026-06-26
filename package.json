@@ -1,0 +1,17 @@
+{
+  "name": "wtman",
+  "version": "0.1.0",
+  "description": "A small Git worktree manager.",
+  "type": "module",
+  "bin": {
+    "wtman": "./bin/wtman.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node ./bin/wtman.js --help"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
