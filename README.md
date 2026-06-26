@@ -154,3 +154,7 @@ Run a basic CLI smoke check:
 ```sh
 npm run smoke
 ```
+
+## License
+
+MIT
