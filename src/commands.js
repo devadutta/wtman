@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { defaultConfig, readConfig, resolveWorktreeDir, writeConfig } from './config.js';
-import { addWorktree, discoverRepo, isSamePath, removeWorktree } from './git.js';
+import { addWorktree, discoverRepo, isDirtyWorktreeRemoveError, isSamePath, removeWorktree } from './git.js';
 import { assertSafeWorktreeName, displayPath } from './path-utils.js';
 import { WtmanError } from './errors.js';
 
@@ -179,7 +179,25 @@ export async function removeProjectWorktree(runtime) {
     await runtime.shell(config.cleanupCommand, { cwd: selected.path });
   }
 
-  await removeWorktree(runtime, repo.currentRoot, selected.path);
+  try {
+    await removeWorktree(runtime, repo.currentRoot, selected.path);
+  } catch (error) {
+    if (!isDirtyWorktreeRemoveError(error)) {
+      throw error;
+    }
+
+    const shouldForce = await runtime.prompts.confirm(
+      `Worktree contains modified or untracked files. Force remove ${displayPath(selected.path, runtime.homeDir)}?`
+    );
+
+    if (!shouldForce) {
+      runtime.stdout.write('Removal cancelled.\n');
+      return;
+    }
+
+    await removeWorktree(runtime, repo.currentRoot, selected.path, { force: true });
+  }
+
   runtime.stdout.write(`Removed worktree: ${selected.path}\n`);
 }
 

@@ -1,28 +1,60 @@
 import readline from 'node:readline/promises';
 import { emitKeypressEvents } from 'node:readline';
+import { confirm as inquirerConfirm, input as inquirerInput, select as inquirerSelect } from '@inquirer/prompts';
 import { SelectionCancelledError } from './errors.js';
 
-function formatDefault(defaultValue) {
-  return defaultValue ? ` (${defaultValue})` : '';
+function promptOutput(runtime) {
+  return runtime.stderr || runtime.stdout;
 }
 
-function renderMenu(output, label, choices, selectedIndex, hasRendered) {
-  if (hasRendered) {
-    output.write(`\x1B[${choices.length + 1}F\x1B[0J`);
+function promptContext(runtime, { signal } = {}) {
+  return {
+    input: runtime.stdin,
+    output: promptOutput(runtime),
+    signal
+  };
+}
+
+function canUseInteractivePrompt(runtime) {
+  return Boolean(runtime.stdin.isTTY && promptOutput(runtime).isTTY && typeof runtime.stdin.setRawMode === 'function');
+}
+
+function isPromptCancellation(error) {
+  return error?.name === 'AbortPromptError' || error?.name === 'CancelPromptError' || error?.name === 'ExitPromptError';
+}
+
+async function runPrompt(runtime, prompt) {
+  const controller = new AbortController();
+  let escaped = false;
+
+  function onKeypress(character, key = {}) {
+    if (key.name === 'escape') {
+      escaped = true;
+      controller.abort();
+    }
   }
 
-  output.write(`${label}\n`);
-  choices.forEach((choice, index) => {
-    const marker = index === selectedIndex ? '>' : ' ';
-    output.write(`${marker} ${choice.label}\n`);
-  });
+  emitKeypressEvents(runtime.stdin);
+  runtime.stdin.on('keypress', onKeypress);
+
+  try {
+    return await prompt(controller.signal);
+  } catch (error) {
+    if (escaped || isPromptCancellation(error)) {
+      throw new SelectionCancelledError();
+    }
+
+    throw error;
+  } finally {
+    runtime.stdin.off('keypress', onKeypress);
+  }
 }
 
 export function createPromptAdapter(runtime) {
-  async function question(message) {
+  async function question(message, { output = promptOutput(runtime) } = {}) {
     const rl = readline.createInterface({
       input: runtime.stdin,
-      output: runtime.stdout
+      output
     });
 
     try {
@@ -34,8 +66,36 @@ export function createPromptAdapter(runtime) {
 
   return {
     async ask(label, { defaultValue = '', validate } = {}) {
+      if (canUseInteractivePrompt(runtime)) {
+        let validatedValue;
+        let hasValidated = false;
+        const answer = await runPrompt(runtime, (signal) =>
+          inquirerInput(
+            {
+              message: label,
+              default: defaultValue,
+              validate: validate
+                ? (value) => {
+                    try {
+                      validatedValue = validate(value);
+                      hasValidated = true;
+                      return true;
+                    } catch (error) {
+                      return error.message;
+                    }
+                  }
+                : undefined
+            },
+            promptContext(runtime, { signal })
+          )
+        );
+
+        return hasValidated ? validatedValue : answer;
+      }
+
       while (true) {
-        const answer = (await question(`${label}${formatDefault(defaultValue)}: `)).trim();
+        const defaultLabel = defaultValue ? ` (${defaultValue})` : '';
+        const answer = (await question(`${label}${defaultLabel}: `)).trim();
         const value = answer || defaultValue;
 
         try {
@@ -47,6 +107,10 @@ export function createPromptAdapter(runtime) {
     },
 
     async confirm(label, { defaultValue = false } = {}) {
+      if (canUseInteractivePrompt(runtime)) {
+        return runPrompt(runtime, (signal) => inquirerConfirm({ message: label, default: defaultValue }, promptContext(runtime, { signal })));
+      }
+
       const suffix = defaultValue ? 'Y/n' : 'y/N';
       const answer = (await question(`${label} (${suffix}): `)).trim().toLowerCase();
 
@@ -62,78 +126,38 @@ export function createPromptAdapter(runtime) {
         throw new Error('no choices available');
       }
 
-      const output = runtime.stderr || runtime.stdout;
+      const output = promptOutput(runtime);
 
-      if (!runtime.stdin.isTTY || !output.isTTY || typeof runtime.stdin.setRawMode !== 'function') {
-        output.write(`${label}\n`);
-        choices.forEach((choice, index) => {
-          output.write(`  ${index + 1}. ${choice.label}\n`);
-        });
-
-        while (true) {
-          const answer = (await question('Select a number: ')).trim();
-          const selectedIndex = Number.parseInt(answer, 10) - 1;
-
-          if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < choices.length) {
-            return choices[selectedIndex].value;
-          }
-
-          runtime.stderr.write('Enter a valid selection number.\n');
-        }
+      if (canUseInteractivePrompt(runtime)) {
+        return runPrompt(runtime, (signal) =>
+          inquirerSelect(
+            {
+              message: label,
+              choices: choices.map((choice) => ({
+                name: choice.label,
+                value: choice.value
+              }))
+            },
+            promptContext(runtime, { signal })
+          )
+        );
       }
 
-      return new Promise((resolve, reject) => {
-        let selectedIndex = 0;
-        let hasRendered = false;
-        const wasRaw = runtime.stdin.isRaw;
-
-        function cleanup() {
-          runtime.stdin.off('keypress', onKeypress);
-          runtime.stdin.setRawMode(wasRaw);
-          runtime.stdin.pause();
-          output.write('\x1B[?25h');
-        }
-
-        function rerender() {
-          renderMenu(output, label, choices, selectedIndex, hasRendered);
-          hasRendered = true;
-        }
-
-        function onKeypress(character, key = {}) {
-          if ((key.ctrl && key.name === 'c') || key.name === 'escape') {
-            cleanup();
-            output.write('\n');
-            reject(new SelectionCancelledError());
-            return;
-          }
-
-          if (key.name === 'up' || character === 'k') {
-            selectedIndex = (selectedIndex - 1 + choices.length) % choices.length;
-            rerender();
-            return;
-          }
-
-          if (key.name === 'down' || character === 'j') {
-            selectedIndex = (selectedIndex + 1) % choices.length;
-            rerender();
-            return;
-          }
-
-          if (key.name === 'return' || key.name === 'enter') {
-            const selected = choices[selectedIndex].value;
-            cleanup();
-            output.write('\n');
-            resolve(selected);
-          }
-        }
-
-        emitKeypressEvents(runtime.stdin);
-        runtime.stdin.on('keypress', onKeypress);
-        runtime.stdin.setRawMode(true);
-        runtime.stdin.resume();
-        output.write('\x1B[?25l');
-        rerender();
+      output.write(`${label}\n`);
+      choices.forEach((choice, index) => {
+        output.write(`  ${index + 1}. ${choice.label}\n`);
       });
+
+      while (true) {
+        const answer = (await question('Select a number: ')).trim();
+        const selectedIndex = Number.parseInt(answer, 10) - 1;
+
+        if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < choices.length) {
+          return choices[selectedIndex].value;
+        }
+
+        runtime.stderr.write('Enter a valid selection number.\n');
+      }
     }
   };
 }

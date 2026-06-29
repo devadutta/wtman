@@ -25,9 +25,11 @@ async function makeTempRuntime(options = {}) {
   const gitCalls = [];
   const shellCalls = [];
   const openShellCalls = [];
+  const confirmCalls = [];
   const gitResponses = [...(options.gitResponses || [])];
   const promptAnswers = [...(options.promptAnswers || [])];
   const selectedValues = [...(options.selectedValues || [])];
+  const confirmAnswers = [...(options.confirmAnswers || [])];
 
   const runtime = {
     cwd: options.cwd || '/repo',
@@ -54,8 +56,9 @@ async function makeTempRuntime(options = {}) {
         const value = next === undefined || next === '' ? defaultValue : next;
         return validate ? validate(value) : value;
       },
-      async confirm() {
-        return false;
+      async confirm(label) {
+        confirmCalls.push(label);
+        return confirmAnswers.shift() || false;
       },
       async select(label, choices) {
         const next = selectedValues.shift();
@@ -99,6 +102,7 @@ async function makeTempRuntime(options = {}) {
     gitCalls,
     shellCalls,
     openShellCalls,
+    confirmCalls,
     get stdout() {
       return stdout;
     },
@@ -412,6 +416,70 @@ test('removeProjectWorktree runs cleanup command before removing selected worktr
     }
   ]);
   assert.match(context.stdout, /Removed worktree:/);
+});
+
+test('removeProjectWorktree asks before force-removing a dirty worktree', async () => {
+  const context = await makeTempRuntime({
+    confirmAnswers: [true],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      {
+        args: ['worktree', 'remove', '/home/me/.worktrees/repo/feature'],
+        cwd: '/repo',
+        error: {
+          exitCode: 128,
+          stderr: "fatal: '/home/me/.worktrees/repo/feature' contains modified or untracked files, use --force to delete it\n"
+        }
+      },
+      {
+        args: ['worktree', 'remove', '--force', '/home/me/.worktrees/repo/feature'],
+        cwd: '/repo'
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await removeProjectWorktree(context.runtime);
+
+  assert.deepEqual(context.confirmCalls, [
+    'Worktree contains modified or untracked files. Force remove /home/me/.worktrees/repo/feature?'
+  ]);
+  assert.match(context.stdout, /Removed worktree:/);
+});
+
+test('removeProjectWorktree cancels when dirty worktree force removal is declined', async () => {
+  const context = await makeTempRuntime({
+    confirmAnswers: [false],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      {
+        args: ['worktree', 'remove', '/home/me/.worktrees/repo/feature'],
+        cwd: '/repo',
+        error: {
+          exitCode: 128,
+          stderr: "fatal: '/home/me/.worktrees/repo/feature' contains modified or untracked files, use --force to delete it\n"
+        }
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await removeProjectWorktree(context.runtime);
+
+  assert.equal(context.gitCalls.length, 3);
+  assert.match(context.stdout, /Removal cancelled\./);
 });
 
 test('startProjectWorktree runs configured start command in selected worktree', async () => {

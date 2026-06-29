@@ -108,8 +108,21 @@ export async function addWorktree(runtime, repoRoot, targetPath, branchName) {
   await runtime.git(['worktree', 'add', '-b', branchName, targetPath, 'HEAD'], { cwd: repoRoot });
 }
 
-export async function removeWorktree(runtime, repoRoot, worktreePath) {
-  await runtime.git(['worktree', 'remove', worktreePath], { cwd: repoRoot });
+export function isDirtyWorktreeRemoveError(error) {
+  const output = [error?.stderr, error?.stdout, error?.message].filter(Boolean).join('\n');
+  return /contains modified or untracked files/i.test(output) && /--force/.test(output);
+}
+
+export async function removeWorktree(runtime, repoRoot, worktreePath, { force = false } = {}) {
+  const args = ['worktree', 'remove'];
+
+  if (force) {
+    args.push('--force');
+  }
+
+  args.push(worktreePath);
+  await runtime.git(args, { cwd: repoRoot });
+  await runtime.fs.rm(worktreePath, { recursive: true, force: true });
 }
 
 export function isSamePath(left, right) {
