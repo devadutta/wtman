@@ -48,6 +48,37 @@ export async function listWorktrees(runtime, { cwd = runtime.cwd } = {}) {
   return parseWorktreePorcelain(output);
 }
 
+export async function getWorktreeStatusEntries(runtime, worktreePath) {
+  const output = await gitOutput(runtime, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: worktreePath });
+  return parseStatusPorcelain(output);
+}
+
+export async function getPullRequestsByBranch(runtime, repoRoot) {
+  if (typeof runtime.gh !== 'function') {
+    return new Map();
+  }
+
+  try {
+    const result = await runtime.gh(
+      [
+        'pr',
+        'list',
+        '--state',
+        'all',
+        '--limit',
+        '500',
+        '--json',
+        'number,url,state,mergedAt,closedAt,headRefName'
+      ],
+      { cwd: repoRoot }
+    );
+
+    return pullRequestsByBranch(parsePullRequests(result.stdout || '[]'));
+  } catch {
+    return new Map();
+  }
+}
+
 export function parseWorktreePorcelain(output) {
   if (!output.trim()) {
     return [];
@@ -84,6 +115,85 @@ export function parseWorktreePorcelain(output) {
       return entry;
     })
     .filter((entry) => entry.path);
+}
+
+export function parseStatusPorcelain(output) {
+  if (!output) {
+    return [];
+  }
+
+  if (!output.includes('\0')) {
+    return output
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => ({
+        status: line.slice(0, 2),
+        path: line.slice(3).replace(/^(.+) -> (.+)$/, '$2')
+      }));
+  }
+
+  const fields = output.split('\0').filter(Boolean);
+  const entries = [];
+
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    const status = field.slice(0, 2);
+
+    entries.push({
+      status,
+      path: field.slice(3)
+    });
+
+    if (status[0] === 'R' || status[0] === 'C') {
+      index += 1;
+    }
+  }
+
+  return entries;
+}
+
+export function parsePullRequests(output) {
+  const pullRequests = JSON.parse(output || '[]');
+
+  if (!Array.isArray(pullRequests)) {
+    return [];
+  }
+
+  return pullRequests
+    .map((pullRequest) => {
+      const branch = pullRequest.headRefName || '';
+
+      if (!branch) {
+        return null;
+      }
+
+      const state = pullRequest.mergedAt
+        ? 'merged'
+        : String(pullRequest.state || '').toLowerCase();
+
+      return {
+        branch,
+        number: pullRequest.number,
+        url: pullRequest.url || '',
+        state,
+        mergedAt: pullRequest.mergedAt || '',
+        closedAt: pullRequest.closedAt || ''
+      };
+    })
+    .filter(Boolean);
+}
+
+export function pullRequestsByBranch(pullRequests) {
+  const byBranch = new Map();
+
+  for (const pullRequest of pullRequests) {
+    if (!byBranch.has(pullRequest.branch)) {
+      byBranch.set(pullRequest.branch, pullRequest);
+    }
+  }
+
+  return byBranch;
 }
 
 export async function branchExists(runtime, repoRoot, branchName) {

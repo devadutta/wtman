@@ -85,13 +85,19 @@ export function createRuntime(overrides = {}) {
         env: runtime.env
       });
     },
+    async gh(args, options = {}) {
+      return execFilePromise('gh', args, {
+        cwd: options.cwd || runtime.cwd,
+        env: runtime.env
+      });
+    },
     async shell(command, options = {}) {
       return runShellCommand(command, {
         cwd: options.cwd || runtime.cwd,
         env: runtime.env,
-        stdin: runtime.stdin,
-        stdout: runtime.stdout,
-        stderr: runtime.stderr
+        stdin: options.stdin || runtime.stdin,
+        stdout: options.stdout || runtime.stdout,
+        stderr: options.stderr || runtime.stderr
       });
     },
     async openShell(options = {}) {

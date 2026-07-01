@@ -38,7 +38,7 @@ On first run for a repository, `wtman` creates a config file and prompts for:
 - Start command
 - Cleanup command
 
-After config exists, running `wtman` opens an interactive worktree picker.
+After config exists, running `wtman` opens an interactive worktree menu.
 
 ## Shell Integration
 
@@ -52,6 +52,7 @@ For zsh, that usually means `~/.zshrc`. After reloading your shell:
 
 - `wtman` selects a worktree and changes into it.
 - `wtman switch` selects a worktree and changes into it.
+- `wtman switch <name>` changes into a worktree by exact folder or branch name.
 - `wtman new` creates a worktree, runs setup if configured, and changes into the new worktree.
 
 ## Commands
@@ -63,8 +64,12 @@ wtman new
 wtman new my-feature
 wtman list
 wtman remove
+wtman remove my-feature
 wtman switch
+wtman switch my-feature
 wtman start
+wtman start my-feature
+wtman clean
 wtman shell-init
 wtman help
 ```
@@ -74,14 +79,24 @@ wtman help
 | `wtman` | Set up config on first run, then select a worktree. |
 | `wtman config` | Create or edit config for the current Git repository. |
 | `wtman new [name]` | Create a new worktree and branch. With shell integration, switch into it after creation. |
-| `wtman list` | List worktrees for the current repository. |
-| `wtman remove` | Select and remove a worktree. Runs `cleanupCommand` first if configured. |
-| `wtman switch` | Select a worktree. With shell integration, switch into it. |
-| `wtman start` | Select a worktree and run the configured `startCommand`. |
+| `wtman list` | List worktrees for the current repository, including linked PR and state when available. |
+| `wtman remove [name]` | Select and remove a worktree, or remove one by exact folder or branch name. Confirms before deleting and runs `cleanupCommand` first if configured. |
+| `wtman switch [name]` | Select a worktree, or switch by exact folder or branch name. With shell integration, switch into it. |
+| `wtman start [name]` | Select a worktree, or start one by exact folder or branch name, and run the configured `startCommand`. |
+| `wtman clean` | Delete worktrees whose linked PR is closed or merged after confirmation. Dirty worktrees and the current worktree are skipped. |
 | `wtman shell-init` | Print the shell function used for directory switching. |
 | `wtman help` | Show CLI help. |
 
-Interactive worktree menus use arrow keys and Enter.
+Interactive worktree menus use arrow keys and these keys:
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Switch to the highlighted worktree. |
+| `n` | Create a new worktree. |
+| `r` | Remove the highlighted worktree after confirmation. |
+| `c` | Edit config. |
+
+If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. If `gh` is unavailable or PR lookup fails, worktree commands continue without PR metadata.
 
 ## Worktree Naming
 

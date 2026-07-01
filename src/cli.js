@@ -1,4 +1,4 @@
-import { configureProject, createWorktree, defaultProjectCommand, defaultProjectSwitchPath, listProjectWorktrees, removeProjectWorktree, startProjectWorktree, switchProjectWorktree } from './commands.js';
+import { cleanProjectWorktrees, configureProject, createWorktree, defaultProjectCommand, defaultProjectSwitchPath, listProjectWorktrees, removeProjectWorktree, startProjectWorktree, switchProjectWorktree } from './commands.js';
 import { createRuntime } from './runtime.js';
 import { WtmanError } from './errors.js';
 
@@ -9,10 +9,14 @@ Usage:
   wtman config     Create or edit config for the current Git repository
   wtman new [name] Create a new worktree
   wtman list       List worktrees for the current repository
-  wtman remove     Select and remove a worktree
-  wtman switch     Select a worktree and cd there with shell integration
-  wtman start      Select a worktree and run the configured start command
-  wtman shell-init Print shell integration for switch and new
+  wtman remove [name]
+                  Select and remove a worktree, or remove by folder/branch
+  wtman switch [name]
+                  Select a worktree, or switch by folder/branch
+  wtman start [name]
+                  Select a worktree, or start by folder/branch
+  wtman clean      Remove closed PR worktrees after confirmation
+  wtman shell-init Print shell integration for directory switching
   wtman help       Show this help
 `;
 
@@ -113,21 +117,47 @@ export async function run(argv = [], runtime = createRuntime()) {
   }
 
   if (command === 'remove') {
-    await removeProjectWorktree(runtime);
+    if (args.length > 1) {
+      throw new WtmanError('usage: wtman remove [name]', { exitCode: 2 });
+    }
+
+    await removeProjectWorktree(runtime, { requestedName: args[0] });
+    return;
+  }
+
+  if (command === 'clean') {
+    if (args.length > 0) {
+      throw new WtmanError('usage: wtman clean', { exitCode: 2 });
+    }
+
+    await cleanProjectWorktrees(runtime);
     return;
   }
 
   if (command === 'switch') {
-    if (args.length > 1 || (args.length === 1 && args[0] !== '--print-path')) {
-      throw new WtmanError('usage: wtman switch [--print-path]', { exitCode: 2 });
+    let printPath = false;
+    let requestedName;
+
+    for (const arg of args) {
+      if (arg === '--print-path') {
+        printPath = true;
+      } else if (!requestedName) {
+        requestedName = arg;
+      } else {
+        throw new WtmanError('usage: wtman switch [--print-path] [name]', { exitCode: 2 });
+      }
     }
 
-    await switchProjectWorktree(runtime, { printPath: args[0] === '--print-path' });
+    await switchProjectWorktree(runtime, { printPath, requestedName });
     return;
   }
 
   if (command === 'start') {
-    await startProjectWorktree(runtime);
+    if (args.length > 1) {
+      throw new WtmanError('usage: wtman start [name]', { exitCode: 2 });
+    }
+
+    await startProjectWorktree(runtime, { requestedName: args[0] });
     return;
   }
 
