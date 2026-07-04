@@ -553,7 +553,7 @@ export async function createWorktree(runtime, {
   output.write(`Using worktree name: ${name}\n`);
   output.write(`Using branch name: ${branch}\n`);
   await runtime.fs.mkdir(baseDir, { recursive: true });
-  await addWorktree(runtime, repo.currentRoot, targetPath, branch);
+  await addWorktree(runtime, repo.primaryWorktree, targetPath, branch, { useLatestHead: true });
 
   if (config.setupCommand) {
     output.write(`Running setup command in ${targetPath}\n`);

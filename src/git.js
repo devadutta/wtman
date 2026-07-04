@@ -209,13 +209,38 @@ export async function branchExists(runtime, repoRoot, branchName) {
   }
 }
 
-export async function addWorktree(runtime, repoRoot, targetPath, branchName) {
+export async function latestHeadStartPoint(runtime, repoRoot) {
+  let upstreamRef;
+
+  try {
+    upstreamRef = await gitOutput(runtime, ['rev-parse', '--symbolic-full-name', '@{upstream}'], { cwd: repoRoot });
+  } catch (error) {
+    if (isExitStatus(error, 128)) {
+      return 'HEAD';
+    }
+
+    throw error;
+  }
+
+  if (!upstreamRef) {
+    return 'HEAD';
+  }
+
+  if (upstreamRef.startsWith('refs/remotes/')) {
+    await runtime.git(['fetch', '--prune'], { cwd: repoRoot });
+  }
+
+  return upstreamRef;
+}
+
+export async function addWorktree(runtime, repoRoot, targetPath, branchName, { useLatestHead = false } = {}) {
   if (await branchExists(runtime, repoRoot, branchName)) {
     await runtime.git(['worktree', 'add', targetPath, branchName], { cwd: repoRoot });
     return;
   }
 
-  await runtime.git(['worktree', 'add', '-b', branchName, targetPath, 'HEAD'], { cwd: repoRoot });
+  const startPoint = useLatestHead ? await latestHeadStartPoint(runtime, repoRoot) : 'HEAD';
+  await runtime.git(['worktree', 'add', '-b', branchName, targetPath, startPoint], { cwd: repoRoot });
 }
 
 export function isDirtyWorktreeRemoveError(error) {

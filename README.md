@@ -87,6 +87,8 @@ wtman help
 | `wtman shell-init` | Print the shell function used for directory switching. |
 | `wtman help` | Show CLI help. |
 
+When `wtman new` creates a branch, it uses the primary worktree as the base. If that worktree has an upstream remote branch, `wtman` fetches first and branches from the updated remote-tracking ref; repositories without an upstream fall back to the primary worktree `HEAD`.
+
 Interactive worktree menus use arrow keys and these keys:
 
 | Key | Action |

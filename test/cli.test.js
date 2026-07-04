@@ -9,6 +9,7 @@ import { createWorktree, generateWorktreeName, removeProjectWorktree, startProje
 import { readConfig, writeConfig } from '../src/config.js';
 
 const STATUS_ARGS = ['status', '--porcelain=v1', '-z', '--untracked-files=all'];
+const UPSTREAM_ARGS = ['rev-parse', '--symbolic-full-name', '@{upstream}'];
 const PR_LIST_ARGS = ['pr', 'list', '--state', 'all', '--limit', '500', '--json', 'number,url,state,mergedAt,closedAt,headRefName'];
 
 const PRIMARY_LIST = `worktree /repo
@@ -60,6 +61,13 @@ async function makeTempRuntime(options = {}) {
       return {
         args: STATUS_ARGS,
         stdout: ''
+      };
+    }
+
+    if (isDeepStrictEqual(args, UPSTREAM_ARGS)) {
+      return {
+        args: UPSTREAM_ARGS,
+        error: { exitCode: 128, message: 'no upstream configured' }
       };
     }
 
@@ -542,6 +550,40 @@ test('createWorktree creates a branch when it does not exist and runs setup comm
   ]);
   assert.match(context.stdout, /Using worktree name: 1-wt-repo/);
   assert.match(context.stdout, /Using branch name: 1-wt-repo/);
+  assert.match(context.stdout, /Created worktree:/);
+});
+
+test('createWorktree creates a new branch from the fetched primary upstream', async () => {
+  const homeDir = path.join(os.tmpdir(), 'wtman-test-home');
+  const targetPath = path.join(homeDir, '.worktrees', 'repo', 'my-feature');
+  const context = await makeTempRuntime({
+    cwd: '/home/me/.worktrees/repo/feature',
+    homeDir,
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/home/me/.worktrees/repo/feature\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/home/me/.worktrees/repo/feature', stdout: FEATURE_LIST },
+      {
+        args: ['show-ref', '--verify', '--quiet', 'refs/heads/my-feature'],
+        cwd: '/repo',
+        error: { exitCode: 1 }
+      },
+      { args: UPSTREAM_ARGS, cwd: '/repo', stdout: 'refs/remotes/origin/main\n' },
+      { args: ['fetch', '--prune'], cwd: '/repo' },
+      {
+        args: ['worktree', 'add', '-b', 'my-feature', targetPath, 'refs/remotes/origin/main'],
+        cwd: '/repo'
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await createWorktree(context.runtime, { requestedName: 'my-feature' });
+
   assert.match(context.stdout, /Created worktree:/);
 });
 
