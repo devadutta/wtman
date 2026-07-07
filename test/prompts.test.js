@@ -108,13 +108,25 @@ test('worktreeMenu switches with enter and arrow keys in a TTY', async () => {
   context.runtime.stdin.write('\r');
 
   assert.deepEqual(await selection, { action: 'switch', value: 'second' });
-  assert.match(context.stderr, /Enter switch  n new  r remove  c config/);
+  assert.match(context.stderr, /Enter switch  f refresh  n new  r remove  c config/);
   assert.match(context.stderr, /Modified  Folder  Branch  PR  State  Changes/);
   assert.equal(context.runtime.stdin.isRaw, false);
   assert.equal(context.runtime.stdin.isPaused(), true);
 });
 
-test('worktreeMenu supports new remove and config shortcuts in a TTY', async () => {
+test('worktreeMenu supports refresh new remove and config shortcuts in a TTY', async () => {
+  const refreshContext = makeTtyRuntime();
+  const refreshPrompts = createPromptAdapter(refreshContext.runtime);
+  const refreshSelection = refreshPrompts.worktreeMenu('Select:', [
+    { label: 'First', value: 'first' },
+    { label: 'Second', value: 'second' }
+  ]);
+
+  await waitForPromptRender();
+  refreshContext.runtime.stdin.write('f');
+
+  assert.deepEqual(await refreshSelection, { action: 'refresh' });
+
   const newContext = makeTtyRuntime();
   const newPrompts = createPromptAdapter(newContext.runtime);
   const newSelection = newPrompts.worktreeMenu('Select:', [

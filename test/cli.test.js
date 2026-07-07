@@ -33,6 +33,23 @@ HEAD 000002
 branch refs/heads/new
 `;
 
+function githubPullRequest({
+  number,
+  branch,
+  state = 'OPEN',
+  mergedAt = null,
+  closedAt = null
+}) {
+  return {
+    number,
+    url: `https://github.com/owner/repo/pull/${number}`,
+    state,
+    mergedAt,
+    closedAt,
+    headRefName: branch
+  };
+}
+
 async function makeTempRuntime(options = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wtman-test-'));
   let stdout = '';
@@ -491,6 +508,83 @@ test('list command renders linked pull request and state columns', async () => {
   assert.match(context.stdout, /\x1b]8;;https:\/\/github\.com\/owner\/repo\/pull\/42/);
 });
 
+test('list command caches pull request status after the first lookup', async () => {
+  const context = await makeTempRuntime({
+    ghResponses: [
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({ number: 42, branch: 'feature' })
+        ])
+      }
+    ],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+
+  await run(['list'], context.runtime);
+  await run(['list'], context.runtime);
+
+  assert.equal(context.ghCalls.length, 1);
+  assert.equal((context.stdout.match(/#42/g) || []).length, 2);
+});
+
+test('default menu refresh shortcut updates cached pull request status', async () => {
+  const context = await makeTempRuntime({
+    menuResults: [
+      { action: 'refresh' },
+      (choices) => ({ action: 'switch', value: choices[1].value })
+    ],
+    ghResponses: [
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({ number: 42, branch: 'feature' })
+        ])
+      },
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({
+            number: 43,
+            branch: 'feature',
+            state: 'CLOSED',
+            closedAt: '2026-06-01T00:00:00Z'
+          })
+        ])
+      }
+    ],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['list'], context.runtime);
+  await run([], context.runtime);
+
+  assert.equal(context.ghCalls.length, 2);
+  assert.match(context.menuCalls[0].choices[1].label, /#42/);
+  assert.match(context.menuCalls[0].choices[1].label, /open/);
+  assert.match(context.menuCalls[1].choices[1].label, /#43/);
+  assert.match(context.menuCalls[1].choices[1].label, /closed/);
+});
+
 test('list command keeps main first and sorts branches by modified time', async () => {
   const now = new Date('2026-06-29T12:00:00Z');
   const context = await makeTempRuntime({
@@ -825,6 +919,57 @@ test('removeProjectWorktree cancels when dirty worktree force removal is decline
 
   assert.equal(context.gitCalls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'remove').length, 1);
   assert.match(context.stdout, /Removal cancelled\./);
+});
+
+test('clean command refreshes cached pull request status before choosing candidates', async () => {
+  const context = await makeTempRuntime({
+    confirmAnswers: [true],
+    ghResponses: [
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({ number: 10, branch: 'old' })
+        ])
+      },
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({
+            number: 10,
+            branch: 'old',
+            state: 'MERGED',
+            mergedAt: '2026-06-01T00:00:00Z',
+            closedAt: '2026-06-01T00:00:00Z'
+          })
+        ])
+      }
+    ],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: MULTI_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: MULTI_LIST },
+      {
+        args: ['worktree', 'remove', '/home/me/.worktrees/repo/old'],
+        cwd: '/repo'
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['list'], context.runtime);
+  await run(['clean'], context.runtime);
+
+  assert.equal(context.ghCalls.length, 2);
+  assert.match(context.confirmCalls[0], /old/);
+  assert.match(context.stdout, /Removed worktree: \/home\/me\/\.worktrees\/repo\/old/);
 });
 
 test('clean command removes closed PR worktrees after confirmation', async () => {

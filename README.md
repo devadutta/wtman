@@ -94,11 +94,12 @@ Interactive worktree menus use arrow keys and these keys:
 | Key | Action |
 | --- | --- |
 | `Enter` | Switch to the highlighted worktree. |
+| `f` | Refresh cached PR status. |
 | `n` | Create a new worktree. |
 | `r` | Remove the highlighted worktree after confirmation. |
 | `c` | Edit config. |
 
-If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. If `gh` is unavailable or PR lookup fails, worktree commands continue without PR metadata.
+If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. PR status is cached indefinitely after the first lookup. Press `f` in the interactive menu or run `wtman clean` to refresh it. If `gh` is unavailable or PR lookup fails, worktree commands continue without PR metadata.
 
 ## Worktree Naming
 

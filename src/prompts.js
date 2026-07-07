@@ -38,7 +38,7 @@ function menuLines(label, choices, selectedIndex, { header } = {}) {
     `? ${label}`,
     ...(header ? [`  ${header}`] : []),
     ...choices.map((choice, index) => `  ${index === selectedIndex ? highlightedSelection(choice.label) : choice.label}`),
-    '  Enter switch  n new  r remove  c config'
+    '  Enter switch  f refresh  n new  r remove  c config'
   ];
 }
 
@@ -120,6 +120,11 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
 
       if (shortcut === 'n') {
         settle(resolve, { action: 'new' });
+        return;
+      }
+
+      if (shortcut === 'f') {
+        settle(resolve, { action: 'refresh' });
         return;
       }
 
@@ -306,15 +311,20 @@ export function createPromptAdapter(runtime) {
       choices.forEach((choice, index) => {
         output.write(`  ${index + 1}. ${choice.label}\n`);
       });
+      output.write('  f. Refresh PR status\n');
       output.write('  n. New worktree\n');
       output.write('  r. Remove first listed worktree\n');
       output.write('  c. Config\n');
 
       while (true) {
-        const answer = (await question('Select a number, n, r, or c: ')).trim().toLowerCase();
+        const answer = (await question('Select a number, f, n, r, or c: ')).trim().toLowerCase();
 
         if (!answer) {
           return { action: 'switch', value: choices[0].value };
+        }
+
+        if (answer === 'f') {
+          return { action: 'refresh' };
         }
 
         if (answer === 'n') {

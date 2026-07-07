@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { projectConfigDir } from './config.js';
 import { WtmanError, isCommandNotFound, isExitStatus } from './errors.js';
 
 function trimTrailingNewline(value) {
@@ -53,28 +54,110 @@ export async function getWorktreeStatusEntries(runtime, worktreePath) {
   return parseStatusPorcelain(output);
 }
 
-export async function getPullRequestsByBranch(runtime, repoRoot) {
-  if (typeof runtime.gh !== 'function') {
-    return new Map();
+function pullRequestCachePath(runtime, repoName) {
+  return path.join(projectConfigDir(runtime, repoName), 'pull-requests.json');
+}
+
+function normalizeCachedPullRequests(value) {
+  const pullRequests = Array.isArray(value) ? value : value?.pullRequests;
+
+  if (!Array.isArray(pullRequests)) {
+    return null;
+  }
+
+  return pullRequests
+    .map((pullRequest) => {
+      const branch = pullRequest?.branch || '';
+
+      if (!branch) {
+        return null;
+      }
+
+      return {
+        branch,
+        number: pullRequest.number,
+        url: pullRequest.url || '',
+        state: pullRequest.state || '',
+        mergedAt: pullRequest.mergedAt || '',
+        closedAt: pullRequest.closedAt || ''
+      };
+    })
+    .filter(Boolean);
+}
+
+async function readPullRequestCache(runtime, repoName) {
+  if (!repoName) {
+    return null;
   }
 
   try {
-    const result = await runtime.gh(
-      [
-        'pr',
-        'list',
-        '--state',
-        'all',
-        '--limit',
-        '500',
-        '--json',
-        'number,url,state,mergedAt,closedAt,headRefName'
-      ],
-      { cwd: repoRoot }
-    );
-
-    return pullRequestsByBranch(parsePullRequests(result.stdout || '[]'));
+    const raw = await runtime.fs.readFile(pullRequestCachePath(runtime, repoName), 'utf8');
+    return normalizeCachedPullRequests(JSON.parse(raw));
   } catch {
+    return null;
+  }
+}
+
+async function writePullRequestCache(runtime, repoName, pullRequests) {
+  if (!repoName) {
+    return;
+  }
+
+  try {
+    const filePath = pullRequestCachePath(runtime, repoName);
+    await runtime.fs.mkdir(path.dirname(filePath), { recursive: true });
+    await runtime.fs.writeFile(filePath, `${JSON.stringify({ pullRequests }, null, 2)}\n`, 'utf8');
+  } catch {
+    // PR metadata is optional; cache write failures should not block worktree commands.
+  }
+}
+
+async function fetchPullRequests(runtime, repoRoot) {
+  if (typeof runtime.gh !== 'function') {
+    return [];
+  }
+
+  const result = await runtime.gh(
+    [
+      'pr',
+      'list',
+      '--state',
+      'all',
+      '--limit',
+      '500',
+      '--json',
+      'number,url,state,mergedAt,closedAt,headRefName'
+    ],
+    { cwd: repoRoot }
+  );
+
+  return parsePullRequests(result.stdout || '[]');
+}
+
+export async function getPullRequestsByBranch(runtime, repoRoot, {
+  repoName,
+  refresh = false,
+  useCacheOnRefreshFailure = true
+} = {}) {
+  const cachedPullRequests = await readPullRequestCache(runtime, repoName);
+
+  if (!refresh && cachedPullRequests) {
+    return pullRequestsByBranch(cachedPullRequests);
+  }
+
+  try {
+    const pullRequests = await fetchPullRequests(runtime, repoRoot);
+    await writePullRequestCache(runtime, repoName, pullRequests);
+    return pullRequestsByBranch(pullRequests);
+  } catch {
+    if (refresh && useCacheOnRefreshFailure && cachedPullRequests) {
+      return pullRequestsByBranch(cachedPullRequests);
+    }
+
+    if (!cachedPullRequests) {
+      await writePullRequestCache(runtime, repoName, []);
+    }
+
     return new Map();
   }
 }
