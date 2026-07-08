@@ -95,7 +95,7 @@ Interactive worktree menus use arrow keys and these keys:
 | --- | --- |
 | `Enter` | Switch to the highlighted worktree. |
 | `f` | Refresh cached PR status. |
-| `n` | Create a new worktree. |
+| `n` | Create a new worktree, prompting for a name with `auto` as the default. |
 | `r` | Remove the highlighted worktree after confirmation. |
 | `c` | Edit config. |
 

@@ -12,6 +12,7 @@ const ICONS = {
 const ANSI_RED = '\x1b[31m';
 const ANSI_DEFAULT_FOREGROUND = '\x1b[39m';
 const OSC_8_END = '\x1b]8;;\x1b\\';
+const AUTO_WORKTREE_NAME = 'auto';
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -458,6 +459,23 @@ async function selectWorktree(runtime, repo, worktrees, label) {
   return runtime.prompts.select(label, worktreeSelect.choices, { header: worktreeSelect.header });
 }
 
+function menuWorktreeName(value) {
+  const name = String(value || '').trim();
+
+  if (!name || name.toLowerCase() === AUTO_WORKTREE_NAME) {
+    return undefined;
+  }
+
+  return assertSafeWorktreeName(name);
+}
+
+async function promptMenuWorktreeName(runtime) {
+  return runtime.prompts.ask('Worktree name', {
+    defaultValue: AUTO_WORKTREE_NAME,
+    validate: menuWorktreeName
+  });
+}
+
 function writeSelectedWorktree(runtime, selected, { printPath = false } = {}) {
   if (printPath) {
     runtime.stdout.write(`${selected.path}\n`);
@@ -510,7 +528,9 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
     }
 
     if (menuResult.action === 'new') {
+      const requestedName = await promptMenuWorktreeName(runtime);
       const targetPath = await createWorktree(runtime, {
+        requestedName,
         output,
         commandOutput: output
       });

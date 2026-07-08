@@ -58,6 +58,7 @@ async function makeTempRuntime(options = {}) {
   const ghCalls = [];
   const shellCalls = [];
   const openShellCalls = [];
+  const askCalls = [];
   const confirmCalls = [];
   const selectCalls = [];
   const menuCalls = [];
@@ -138,6 +139,7 @@ async function makeTempRuntime(options = {}) {
     },
     prompts: {
       async ask(label, { defaultValue = '', validate } = {}) {
+        askCalls.push({ label, defaultValue });
         const next = promptAnswers.shift();
         const value = next === undefined || next === '' ? defaultValue : next;
         return validate ? validate(value) : value;
@@ -218,6 +220,7 @@ async function makeTempRuntime(options = {}) {
     ghCalls,
     shellCalls,
     openShellCalls,
+    askCalls,
     confirmCalls,
     selectCalls,
     menuCalls,
@@ -348,6 +351,48 @@ test('default command can create a new worktree from the menu shortcut', async (
   await run([], context.runtime);
 
   assert.equal(context.menuCalls.length, 1);
+  assert.deepEqual(context.askCalls, [
+    { label: 'Worktree name', defaultValue: 'auto' }
+  ]);
+  assert.match(context.stdout, /Created worktree:/);
+});
+
+test('default command can create a named worktree from the menu shortcut', async () => {
+  const homeDir = path.join(os.tmpdir(), 'wtman-test-home');
+  const targetPath = path.join(homeDir, '.worktrees', 'repo', 'custom-feature');
+  const context = await makeTempRuntime({
+    homeDir,
+    menuResults: [{ action: 'new' }],
+    promptAnswers: ['custom-feature'],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      {
+        args: ['show-ref', '--verify', '--quiet', 'refs/heads/custom-feature'],
+        cwd: '/repo',
+        error: { exitCode: 1 }
+      },
+      {
+        args: ['worktree', 'add', '-b', 'custom-feature', targetPath, 'HEAD'],
+        cwd: '/repo'
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run([], context.runtime);
+
+  assert.deepEqual(context.askCalls, [
+    { label: 'Worktree name', defaultValue: 'auto' }
+  ]);
+  assert.match(context.stdout, /Using worktree name: custom-feature/);
   assert.match(context.stdout, /Created worktree:/);
 });
 
@@ -382,6 +427,9 @@ test('default print path writes only the created worktree path for the new short
 
   await run(['--default-print-path'], context.runtime);
 
+  assert.deepEqual(context.askCalls, [
+    { label: 'Worktree name', defaultValue: 'auto' }
+  ]);
   assert.equal(context.stdout, `${targetPath}\n`);
   assert.match(context.stderr, /Created worktree:/);
 });
