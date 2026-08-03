@@ -561,8 +561,8 @@ function menuWorktreeName(value) {
 }
 
 async function promptMenuWorktreeName(runtime) {
-  return runtime.prompts.ask('Worktree name', {
-    defaultValue: AUTO_WORKTREE_NAME,
+  return runtime.prompts.ask('Worktree name (blank for auto)', {
+    defaultValue: '',
     validate: menuWorktreeName
   });
 }

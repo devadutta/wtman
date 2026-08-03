@@ -354,7 +354,7 @@ test('default command can create a new worktree from the menu shortcut', async (
 
   assert.equal(context.menuCalls.length, 2);
   assert.deepEqual(context.askCalls, [
-    { label: 'Worktree name', defaultValue: 'auto' }
+    { label: 'Worktree name (blank for auto)', defaultValue: '' }
   ]);
   assert.match(context.stdout, /Created worktree:/);
 });
@@ -394,7 +394,7 @@ test('default command can create a named worktree from the menu shortcut', async
   await run([], context.runtime);
 
   assert.deepEqual(context.askCalls, [
-    { label: 'Worktree name', defaultValue: 'auto' }
+    { label: 'Worktree name (blank for auto)', defaultValue: '' }
   ]);
   assert.match(context.stdout, /Using worktree name: custom-feature/);
   assert.match(context.stdout, /Created worktree:/);
@@ -434,7 +434,7 @@ test('default print path keeps the menu open after creating a worktree', async (
   await run(['--default-print-path'], context.runtime);
 
   assert.deepEqual(context.askCalls, [
-    { label: 'Worktree name', defaultValue: 'auto' }
+    { label: 'Worktree name (blank for auto)', defaultValue: '' }
   ]);
   assert.equal(context.menuCalls.length, 2);
   assert.equal(context.stdout, '/repo\n');
