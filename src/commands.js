@@ -583,87 +583,133 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
   }
 
   const output = printPath ? runtime.stderr : runtime.stdout;
-  let refreshedPullRequestsByBranch;
   let currentRepo = repo;
+  let pullRequestsByBranch = await getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
+    repoName: currentRepo.repoName,
+    cacheOnly: true
+  });
+  let automaticRefreshSettled = false;
+  const automaticRefreshController = new AbortController();
+  const automaticRefresh = getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
+    repoName: currentRepo.repoName,
+    refresh: true,
+    signal: automaticRefreshController.signal
+  })
+    .catch(() => pullRequestsByBranch)
+    .then((freshPullRequestsByBranch) => {
+      pullRequestsByBranch = freshPullRequestsByBranch;
+      return freshPullRequestsByBranch;
+    })
+    .finally(() => {
+      automaticRefreshSettled = true;
+    });
 
-  while (true) {
-    const worktreeOptions = refreshedPullRequestsByBranch
-      ? { pullRequestsByBranch: refreshedPullRequestsByBranch }
-      : {};
-    const worktreeSelect = await worktreeChoices(runtime, currentRepo, currentRepo.worktrees, worktreeOptions);
-    const menuResult = typeof runtime.prompts.worktreeMenu === 'function'
-      ? await runtime.prompts.worktreeMenu(
-        'Select a worktree:',
-        worktreeSelect.choices,
-        { header: worktreeSelect.header }
-      )
-      : {
-        action: 'switch',
-        value: await runtime.prompts.select(
-          'Select a worktree to switch to:',
+  try {
+    while (true) {
+      const displayedPullRequestsByBranch = pullRequestsByBranch;
+      const worktreeOptions = { pullRequestsByBranch: displayedPullRequestsByBranch };
+      const worktreeSelect = await worktreeChoices(runtime, currentRepo, currentRepo.worktrees, worktreeOptions);
+      let updatePromise;
+
+      if (displayedPullRequestsByBranch !== pullRequestsByBranch) {
+        updatePromise = Promise.resolve(pullRequestsByBranch);
+      } else if (!automaticRefreshSettled) {
+        updatePromise = automaticRefresh;
+      }
+
+      const mapUpdate = updatePromise
+        ? (freshPullRequestsByBranch) =>
+          worktreeChoices(runtime, currentRepo, currentRepo.worktrees, {
+            pullRequestsByBranch: freshPullRequestsByBranch
+          })
+        : undefined;
+
+      const menuResult = typeof runtime.prompts.worktreeMenu === 'function'
+        ? await runtime.prompts.worktreeMenu(
+          'Select a worktree:',
           worktreeSelect.choices,
-          { header: worktreeSelect.header }
+          {
+            header: worktreeSelect.header,
+            updatePromise,
+            mapUpdate
+          }
         )
-      };
+        : {
+          action: 'switch',
+          value: await runtime.prompts.select(
+            'Select a worktree to switch to:',
+            worktreeSelect.choices,
+            { header: worktreeSelect.header }
+          )
+        };
 
-    if (menuResult.action === 'refresh') {
-      refreshedPullRequestsByBranch = await getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
-        repoName: currentRepo.repoName,
-        refresh: true
-      });
-      continue;
-    }
-
-    if (menuResult.action === 'switch') {
-      writeSelectedWorktree(runtime, menuResult.value, { printPath });
-      return;
-    }
-
-    if (menuResult.action === 'quit') {
-      if (printPath) {
-        runtime.stdout.write(`${runtime.cwd}\n`);
-      }
-      return;
-    }
-
-    if (menuResult.action === 'new') {
-      const requestedName = await promptMenuWorktreeName(runtime);
-      const targetPath = await createWorktree(runtime, {
-        requestedName,
-        output,
-        commandOutput: output
-      });
-
-      if (printPath) {
-        output.write(`Created ${displayPath(targetPath, runtime.homeDir)}. Select it and press Enter to switch.\n`);
-      }
-
-      currentRepo = await discoverRepo(runtime);
-      continue;
-    }
-
-    if (menuResult.action === 'remove') {
-      if (!isRemovableWorktree(currentRepo, menuResult.value)) {
-        output.write(`Selected worktree cannot be removed: ${displayPath(menuResult.value.path, runtime.homeDir)}\n`);
+      if (menuResult.action === 'refresh') {
+        if (!automaticRefreshSettled || displayedPullRequestsByBranch !== pullRequestsByBranch) {
+          pullRequestsByBranch = await automaticRefresh;
+        } else {
+          pullRequestsByBranch = await getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
+            repoName: currentRepo.repoName,
+            refresh: true
+          });
+        }
         continue;
       }
 
-      const config = await ensureProjectConfig(runtime, currentRepo);
-      const result = await removeSelectedWorktree(runtime, currentRepo, config, menuResult.value, { output });
-
-      if (result === 'removed') {
-        currentRepo = await discoverRepo(runtime);
+      if (menuResult.action === 'switch') {
+        writeSelectedWorktree(runtime, menuResult.value, { printPath });
+        return;
       }
 
-      continue;
-    }
+      if (menuResult.action === 'quit') {
+        if (printPath) {
+          runtime.stdout.write(`${runtime.cwd}\n`);
+        }
+        return;
+      }
 
-    if (menuResult.action === 'config') {
-      await configureProject(runtime, { forceEdit: true, output });
-      continue;
-    }
+      if (menuResult.action === 'new') {
+        const requestedName = await promptMenuWorktreeName(runtime);
+        const targetPath = await createWorktree(runtime, {
+          requestedName,
+          output,
+          commandOutput: output
+        });
 
-    throw new WtmanError(`unknown menu action: ${menuResult.action}`);
+        if (printPath) {
+          output.write(`Created ${displayPath(targetPath, runtime.homeDir)}. Select it and press Enter to switch.\n`);
+        }
+
+        currentRepo = await discoverRepo(runtime);
+        continue;
+      }
+
+      if (menuResult.action === 'remove') {
+        if (!isRemovableWorktree(currentRepo, menuResult.value)) {
+          output.write(`Selected worktree cannot be removed: ${displayPath(menuResult.value.path, runtime.homeDir)}\n`);
+          continue;
+        }
+
+        const config = await ensureProjectConfig(runtime, currentRepo);
+        const result = await removeSelectedWorktree(runtime, currentRepo, config, menuResult.value, { output });
+
+        if (result === 'removed') {
+          currentRepo = await discoverRepo(runtime);
+        }
+
+        continue;
+      }
+
+      if (menuResult.action === 'config') {
+        await configureProject(runtime, { forceEdit: true, output });
+        continue;
+      }
+
+      throw new WtmanError(`unknown menu action: ${menuResult.action}`);
+    }
+  } finally {
+    if (!automaticRefreshSettled) {
+      automaticRefreshController.abort();
+    }
   }
 }
 

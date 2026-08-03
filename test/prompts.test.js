@@ -114,6 +114,77 @@ test('worktreeMenu switches with enter and arrow keys in a TTY', async () => {
   assert.equal(context.runtime.stdin.isPaused(), true);
 });
 
+test('worktreeMenu applies asynchronous row updates without moving the selection', async () => {
+  const context = makeTtyRuntime();
+  const prompts = createPromptAdapter(context.runtime);
+  const first = { path: '/repo/first' };
+  const second = { path: '/repo/second' };
+  let resolveUpdate;
+  const updatePromise = new Promise((resolve) => {
+    resolveUpdate = resolve;
+  });
+  const selection = prompts.worktreeMenu(
+    'Select a worktree:',
+    [
+      { label: 'Cached first', value: first },
+      { label: 'Cached second', value: second }
+    ],
+    {
+      header: 'Cached header',
+      updatePromise
+    }
+  );
+
+  await waitForPromptRender();
+  context.runtime.stdin.write('\x1B[B');
+  assert.match(context.stderr, /refreshing PRs/);
+
+  const freshFirst = { path: '/repo/first' };
+  const freshSecond = { path: '/repo/second' };
+  resolveUpdate({
+    header: 'Fresh header',
+    choices: [
+      { label: 'Fresh first', value: freshFirst },
+      { label: 'Fresh second', value: freshSecond }
+    ]
+  });
+  await waitForPromptRender();
+  context.runtime.stdin.write('\r');
+
+  assert.deepEqual(await selection, { action: 'switch', value: freshSecond });
+  assert.match(context.stderr, /Fresh header/);
+  assert.match(context.stderr, /\x1b\[7mFresh second/);
+});
+
+test('worktreeMenu does not build an asynchronous update after quitting', async () => {
+  const context = makeTtyRuntime();
+  const prompts = createPromptAdapter(context.runtime);
+  let resolveUpdate;
+  let mapUpdateCalls = 0;
+  const updatePromise = new Promise((resolve) => {
+    resolveUpdate = resolve;
+  });
+  const selection = prompts.worktreeMenu(
+    'Select:',
+    [{ label: 'Cached', value: 'cached' }],
+    {
+      updatePromise,
+      async mapUpdate() {
+        mapUpdateCalls += 1;
+        return { choices: [{ label: 'Fresh', value: 'fresh' }] };
+      }
+    }
+  );
+
+  await waitForPromptRender();
+  context.runtime.stdin.write('q');
+  assert.deepEqual(await selection, { action: 'quit' });
+
+  resolveUpdate('fresh');
+  await waitForPromptRender();
+  assert.equal(mapUpdateCalls, 0);
+});
+
 test('worktreeMenu supports refresh new remove and config shortcuts in a TTY', async () => {
   const refreshContext = makeTtyRuntime();
   const refreshPrompts = createPromptAdapter(refreshContext.runtime);

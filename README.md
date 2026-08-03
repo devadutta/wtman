@@ -102,7 +102,7 @@ Interactive worktree menus use arrow keys and these keys:
 
 The menu stays open after refresh, create, remove, and config actions. Press `Enter` to switch to the highlighted worktree, or `q`/`Esc` to close it. Worktree removal shows file-deletion progress in interactive terminals.
 
-If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. PR status is cached indefinitely after the first lookup. Press `f` in the interactive menu or run `wtman clean` to refresh it. If `gh` is unavailable or PR lookup fails, worktree commands continue without PR metadata.
+If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. The interactive menu renders cached PR status immediately, refreshes it in the background on startup, and redraws changed rows in place. Press `f` for another manual refresh, or run `wtman clean` to refresh before cleanup. If `gh` is unavailable or PR lookup fails, worktree commands continue with cached PR metadata when available.
 
 ## Worktree Naming
 

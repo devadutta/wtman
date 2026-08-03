@@ -161,7 +161,7 @@ async function makeTempRuntime(options = {}) {
         menuCalls.push({ label, choices, options });
         const next = menuResults.shift();
         if (next !== undefined) {
-          return typeof next === 'function' ? next(choices) : next;
+          return typeof next === 'function' ? next(choices, options) : next;
         }
 
         return { action: 'switch', value: choices[0].value };
@@ -187,7 +187,7 @@ async function makeTempRuntime(options = {}) {
       };
     },
     async gh(args, options = {}) {
-      ghCalls.push({ args, cwd: options.cwd });
+      ghCalls.push({ args, cwd: options.cwd, signal: options.signal });
       const next = matchesGitResponse(ghResponses[0], args, options.cwd) ? ghResponses.shift() : defaultGhResponse(args);
       assert.ok(next, `unexpected gh call: ${args.join(' ')}`);
       assert.deepEqual(args, next.args);
@@ -198,6 +198,22 @@ async function makeTempRuntime(options = {}) {
 
       if (next.error) {
         throw Object.assign(new Error(next.error.message || 'gh failed'), next.error);
+      }
+
+      if (next.waitForAbort) {
+        await new Promise((resolve, reject) => {
+          const abort = () => reject(Object.assign(new Error('aborted'), {
+            name: 'AbortError',
+            code: 'ABORT_ERR'
+          }));
+
+          if (options.signal?.aborted) {
+            abort();
+            return;
+          }
+
+          options.signal?.addEventListener('abort', abort, { once: true });
+        });
       }
 
       return {
@@ -667,6 +683,93 @@ test('default menu refresh shortcut updates cached pull request status', async (
   assert.match(context.menuCalls[0].choices[1].label, /open/);
   assert.match(context.menuCalls[1].choices[1].label, /#43/);
   assert.match(context.menuCalls[1].choices[1].label, /closed/);
+});
+
+test('default menu renders cached PR status then applies an asynchronous refresh', async () => {
+  const context = await makeTempRuntime({
+    menuResults: [
+      async (choices, options) => {
+        assert.match(choices[1].label, /#42/);
+        assert.match(choices[1].label, /open/);
+        assert.ok(options.updatePromise);
+
+        const freshPullRequestsByBranch = await options.updatePromise;
+        const update = await options.mapUpdate(freshPullRequestsByBranch);
+        assert.match(update.choices[1].label, /#43/);
+        assert.match(update.choices[1].label, /closed/);
+        return { action: 'switch', value: update.choices[1].value };
+      }
+    ],
+    ghResponses: [
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({ number: 42, branch: 'feature' })
+        ])
+      },
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        stdout: JSON.stringify([
+          githubPullRequest({
+            number: 43,
+            branch: 'feature',
+            state: 'CLOSED',
+            closedAt: '2026-06-01T00:00:00Z'
+          })
+        ])
+      }
+    ],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['list'], context.runtime);
+  await run([], context.runtime);
+
+  assert.equal(context.ghCalls.length, 2);
+  assert.equal(context.menuCalls.length, 1);
+  assert.match(context.stdout, /Selected worktree: \/home\/me\/\.worktrees\/repo\/feature/);
+});
+
+test('quitting the default menu aborts an in-flight PR refresh', async () => {
+  const context = await makeTempRuntime({
+    menuResults: [{ action: 'quit' }],
+    ghResponses: [
+      {
+        args: PR_LIST_ARGS,
+        cwd: '/repo',
+        waitForAbort: true
+      }
+    ],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run([], context.runtime);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(context.ghCalls.length, 1);
+  assert.equal(context.ghCalls[0].signal.aborted, true);
 });
 
 test('list command keeps main first and sorts branches by modified time', async () => {

@@ -35,13 +35,21 @@ function highlightedSelection(text) {
   return `${ANSI_INVERSE}${text}${ANSI_INVERSE_OFF}`;
 }
 
-function menuLines(label, choices, selectedIndex, { header } = {}) {
+function menuLines(label, choices, selectedIndex, { header, refreshing = false } = {}) {
   return [
-    `? ${label}`,
+    `? ${label}${refreshing ? '  (refreshing PRs…)' : ''}`,
     ...(header ? [`  ${header}`] : []),
     ...choices.map((choice, index) => `  ${index === selectedIndex ? highlightedSelection(choice.label) : choice.label}`),
     '  ↑↓ move  Enter switch  f refresh  n new  r remove  c config  q/Esc quit'
   ];
+}
+
+function isSameChoiceValue(left, right) {
+  if (left === right) {
+    return true;
+  }
+
+  return Boolean(left?.path && right?.path && left.path === right.path);
 }
 
 function writeMenu(output, lines, previousLineCount) {
@@ -58,6 +66,9 @@ function writeMenu(output, lines, previousLineCount) {
 
 function runMenuPrompt(runtime, label, choices, options = {}) {
   const output = promptOutput(runtime);
+  let currentChoices = choices;
+  let currentHeader = options.header;
+  let refreshing = Boolean(options.updatePromise);
   let selectedIndex = 0;
   let renderedLineCount = 0;
   let settled = false;
@@ -70,7 +81,10 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
 
   return new Promise((resolve, reject) => {
     function render() {
-      renderedLineCount = writeMenu(output, menuLines(label, choices, selectedIndex, options), renderedLineCount);
+      renderedLineCount = writeMenu(output, menuLines(label, currentChoices, selectedIndex, {
+        header: currentHeader,
+        refreshing
+      }), renderedLineCount);
     }
 
     function cleanup() {
@@ -105,19 +119,19 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
       }
 
       if (key.name === 'up') {
-        selectedIndex = selectedIndex === 0 ? choices.length - 1 : selectedIndex - 1;
+        selectedIndex = selectedIndex === 0 ? currentChoices.length - 1 : selectedIndex - 1;
         render();
         return;
       }
 
       if (key.name === 'down') {
-        selectedIndex = selectedIndex === choices.length - 1 ? 0 : selectedIndex + 1;
+        selectedIndex = selectedIndex === currentChoices.length - 1 ? 0 : selectedIndex + 1;
         render();
         return;
       }
 
       if (key.name === 'return' || key.name === 'enter') {
-        settle(resolve, { action: 'switch', value: choices[selectedIndex].value });
+        settle(resolve, { action: 'switch', value: currentChoices[selectedIndex].value });
         return;
       }
 
@@ -134,7 +148,7 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
       }
 
       if (shortcut === 'r') {
-        settle(resolve, { action: 'remove', value: choices[selectedIndex].value });
+        settle(resolve, { action: 'remove', value: currentChoices[selectedIndex].value });
         return;
       }
 
@@ -146,6 +160,39 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
       if (shortcut === 'q') {
         settle(resolve, { action: 'quit' });
       }
+    }
+
+    if (options.updatePromise) {
+      (async () => {
+        try {
+          const value = await options.updatePromise;
+
+          if (settled) {
+            return;
+          }
+
+          const update = typeof options.mapUpdate === 'function'
+            ? await options.mapUpdate(value)
+            : value;
+
+          if (settled) {
+            return;
+          }
+
+          const selectedValue = currentChoices[selectedIndex]?.value;
+          currentChoices = update?.choices?.length > 0 ? update.choices : currentChoices;
+          currentHeader = update?.header ?? currentHeader;
+          const updatedIndex = currentChoices.findIndex((choice) => isSameChoiceValue(choice.value, selectedValue));
+          selectedIndex = updatedIndex >= 0 ? updatedIndex : Math.min(selectedIndex, currentChoices.length - 1);
+          refreshing = false;
+          render();
+        } catch {
+          if (!settled) {
+            refreshing = false;
+            render();
+          }
+        }
+      })();
     }
 
     runtime.stdin.on('keypress', onKeypress);
@@ -302,16 +349,19 @@ export function createPromptAdapter(runtime) {
       }
     },
 
-    async worktreeMenu(label, choices, { header } = {}) {
+    async worktreeMenu(label, choices, options = {}) {
       if (choices.length === 0) {
         throw new Error('no choices available');
       }
 
       const output = promptOutput(runtime);
+      const { header } = options;
 
       if (canUseInteractivePrompt(runtime)) {
-        return runMenuPrompt(runtime, label, choices, { header });
+        return runMenuPrompt(runtime, label, choices, options);
       }
+
+      Promise.resolve(options.updatePromise).catch(() => {});
 
       output.write(`${label}\n`);
       if (header) {

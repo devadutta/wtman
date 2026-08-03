@@ -88,7 +88,8 @@ export function createRuntime(overrides = {}) {
     async gh(args, options = {}) {
       return execFilePromise('gh', args, {
         cwd: options.cwd || runtime.cwd,
-        env: runtime.env
+        env: runtime.env,
+        signal: options.signal
       });
     },
     async shell(command, options = {}) {

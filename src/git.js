@@ -112,7 +112,7 @@ async function writePullRequestCache(runtime, repoName, pullRequests) {
   }
 }
 
-async function fetchPullRequests(runtime, repoRoot) {
+async function fetchPullRequests(runtime, repoRoot, { signal } = {}) {
   if (typeof runtime.gh !== 'function') {
     return [];
   }
@@ -128,7 +128,7 @@ async function fetchPullRequests(runtime, repoRoot) {
       '--json',
       'number,url,state,mergedAt,closedAt,headRefName'
     ],
-    { cwd: repoRoot }
+    { cwd: repoRoot, signal }
   );
 
   return parsePullRequests(result.stdout || '[]');
@@ -137,16 +137,22 @@ async function fetchPullRequests(runtime, repoRoot) {
 export async function getPullRequestsByBranch(runtime, repoRoot, {
   repoName,
   refresh = false,
+  cacheOnly = false,
+  signal,
   useCacheOnRefreshFailure = true
 } = {}) {
   const cachedPullRequests = await readPullRequestCache(runtime, repoName);
+
+  if (cacheOnly) {
+    return cachedPullRequests ? pullRequestsByBranch(cachedPullRequests) : new Map();
+  }
 
   if (!refresh && cachedPullRequests) {
     return pullRequestsByBranch(cachedPullRequests);
   }
 
   try {
-    const pullRequests = await fetchPullRequests(runtime, repoRoot);
+    const pullRequests = await fetchPullRequests(runtime, repoRoot, { signal });
     await writePullRequestCache(runtime, repoName, pullRequests);
     return pullRequestsByBranch(pullRequests);
   } catch {
