@@ -8,7 +8,7 @@ import { run } from '../src/cli.js';
 import { createWorktree, generateWorktreeName, removeProjectWorktree, startProjectWorktree, switchProjectWorktree } from '../src/commands.js';
 import { readConfig, writeConfig } from '../src/config.js';
 
-const STATUS_ARGS = ['status', '--porcelain=v1', '-z', '--untracked-files=all'];
+const STATUS_ARGS = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'];
 const UPSTREAM_ARGS = ['rev-parse', '--symbolic-full-name', '@{upstream}'];
 const PR_LIST_ARGS = ['pr', 'list', '--state', 'all', '--limit', '500', '--json', 'number,url,state,mergedAt,closedAt,headRefName'];
 
@@ -324,7 +324,7 @@ test('default command can create a new worktree from the menu shortcut', async (
   const homeDir = path.join(os.tmpdir(), 'wtman-test-home');
   const context = await makeTempRuntime({
     homeDir,
-    menuResults: [{ action: 'new' }],
+    menuResults: [{ action: 'new' }, { action: 'quit' }],
     gitResponses: [
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
       { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
@@ -338,7 +338,9 @@ test('default command can create a new worktree from the menu shortcut', async (
       {
         args: ['worktree', 'add', '-b', '1-wt-repo', path.join(homeDir, '.worktrees', 'repo', '1-wt-repo'), 'HEAD'],
         cwd: '/repo'
-      }
+      },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
     ]
   });
   await writeConfig(context.runtime, 'repo', {
@@ -350,7 +352,7 @@ test('default command can create a new worktree from the menu shortcut', async (
 
   await run([], context.runtime);
 
-  assert.equal(context.menuCalls.length, 1);
+  assert.equal(context.menuCalls.length, 2);
   assert.deepEqual(context.askCalls, [
     { label: 'Worktree name', defaultValue: 'auto' }
   ]);
@@ -362,7 +364,7 @@ test('default command can create a named worktree from the menu shortcut', async
   const targetPath = path.join(homeDir, '.worktrees', 'repo', 'custom-feature');
   const context = await makeTempRuntime({
     homeDir,
-    menuResults: [{ action: 'new' }],
+    menuResults: [{ action: 'new' }, { action: 'quit' }],
     promptAnswers: ['custom-feature'],
     gitResponses: [
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
@@ -377,7 +379,9 @@ test('default command can create a named worktree from the menu shortcut', async
       {
         args: ['worktree', 'add', '-b', 'custom-feature', targetPath, 'HEAD'],
         cwd: '/repo'
-      }
+      },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
     ]
   });
   await writeConfig(context.runtime, 'repo', {
@@ -396,12 +400,12 @@ test('default command can create a named worktree from the menu shortcut', async
   assert.match(context.stdout, /Created worktree:/);
 });
 
-test('default print path writes only the created worktree path for the new shortcut', async () => {
+test('default print path keeps the menu open after creating a worktree', async () => {
   const homeDir = path.join(os.tmpdir(), 'wtman-test-home');
   const targetPath = path.join(homeDir, '.worktrees', 'repo', '1-wt-repo');
   const context = await makeTempRuntime({
     homeDir,
-    menuResults: [{ action: 'new' }],
+    menuResults: [{ action: 'new' }, { action: 'quit' }],
     gitResponses: [
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
       { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
@@ -415,7 +419,9 @@ test('default print path writes only the created worktree path for the new short
       {
         args: ['worktree', 'add', '-b', '1-wt-repo', targetPath, 'HEAD'],
         cwd: '/repo'
-      }
+      },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
     ]
   });
   await writeConfig(context.runtime, 'repo', {
@@ -430,7 +436,8 @@ test('default print path writes only the created worktree path for the new short
   assert.deepEqual(context.askCalls, [
     { label: 'Worktree name', defaultValue: 'auto' }
   ]);
-  assert.equal(context.stdout, `${targetPath}\n`);
+  assert.equal(context.menuCalls.length, 2);
+  assert.equal(context.stdout, '/repo\n');
   assert.match(context.stderr, /Created worktree:/);
 });
 
@@ -438,7 +445,8 @@ test('default print path keeps remove shortcut messages off stdout', async () =>
   const context = await makeTempRuntime({
     confirmAnswers: [true],
     menuResults: [
-      (choices) => ({ action: 'remove', value: choices[1].value })
+      (choices) => ({ action: 'remove', value: choices[1].value }),
+      { action: 'quit' }
     ],
     gitResponses: [
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
@@ -446,7 +454,9 @@ test('default print path keeps remove shortcut messages off stdout', async () =>
       {
         args: ['worktree', 'remove', '/home/me/.worktrees/repo/feature'],
         cwd: '/repo'
-      }
+      },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: PRIMARY_LIST }
     ]
   });
   await writeConfig(context.runtime, 'repo', {
@@ -459,7 +469,33 @@ test('default print path keeps remove shortcut messages off stdout', async () =>
   await run(['--default-print-path'], context.runtime);
 
   assert.equal(context.stdout, '/repo\n');
+  assert.equal(context.menuCalls.length, 2);
   assert.match(context.stderr, /Removed worktree:/);
+});
+
+test('default print path keeps config output off stdout while the menu stays open', async () => {
+  const context = await makeTempRuntime({
+    menuResults: [{ action: 'config' }, { action: 'quit' }],
+    promptAnswers: ['~/.worktrees/repo', '', '', ''],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['--default-print-path'], context.runtime);
+
+  assert.equal(context.menuCalls.length, 2);
+  assert.equal(context.stdout, '/repo\n');
+  assert.match(context.stderr, /Saved config for repo/);
 });
 
 test('default print path does not run setup when config is missing', async () => {
@@ -904,6 +940,44 @@ test('remove command removes a worktree by folder name without prompting for sel
   assert.match(context.stdout, /Removed worktree:/);
 });
 
+test('remove command renders worktree deletion progress in a TTY', async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wtman-progress-test-'));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const worktreePath = path.join(tempDir, 'feature');
+  await fs.mkdir(path.join(worktreePath, 'node_modules', 'package'), { recursive: true });
+  await fs.writeFile(path.join(worktreePath, '.git'), 'gitdir: /tmp/example\n');
+  await fs.writeFile(path.join(worktreePath, 'node_modules', 'package', 'index.js'), 'export {};\n');
+  const worktreeList = `${PRIMARY_LIST}\nworktree ${worktreePath}\nHEAD def456\nbranch refs/heads/feature\n`;
+  const context = await makeTempRuntime({
+    stdoutIsTTY: true,
+    confirmAnswers: [true],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: worktreeList },
+      {
+        args: ['worktree', 'remove', '--force', worktreePath],
+        cwd: '/repo'
+      }
+    ]
+  });
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['remove', 'feature'], context.runtime);
+
+  assert.match(context.stdout, /Indexing feature/);
+  assert.match(context.stdout, /Deleting feature/);
+  assert.match(context.stdout, /100%/);
+  assert.match(context.stdout, /Finalizing feature/);
+  assert.match(context.stdout, /\x1b\[\?25l/);
+  assert.match(context.stdout, /\x1b\[\?25h/);
+  await assert.rejects(() => fs.stat(worktreePath), { code: 'ENOENT' });
+});
+
 test('removeProjectWorktree asks before force-removing a dirty worktree', async () => {
   const context = await makeTempRuntime({
     confirmAnswers: [true, true],
@@ -911,12 +985,14 @@ test('removeProjectWorktree asks before force-removing a dirty worktree', async 
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
       { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
       {
-        args: ['worktree', 'remove', '/home/me/.worktrees/repo/feature'],
-        cwd: '/repo',
-        error: {
-          exitCode: 128,
-          stderr: "fatal: '/home/me/.worktrees/repo/feature' contains modified or untracked files, use --force to delete it\n"
-        }
+        args: STATUS_ARGS,
+        cwd: '/home/me/.worktrees/repo/feature',
+        stdout: ' M package.json\0'
+      },
+      {
+        args: STATUS_ARGS,
+        cwd: '/home/me/.worktrees/repo/feature',
+        stdout: ' M package.json\0'
       },
       {
         args: ['worktree', 'remove', '--force', '/home/me/.worktrees/repo/feature'],
@@ -947,12 +1023,14 @@ test('removeProjectWorktree cancels when dirty worktree force removal is decline
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
       { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST },
       {
-        args: ['worktree', 'remove', '/home/me/.worktrees/repo/feature'],
-        cwd: '/repo',
-        error: {
-          exitCode: 128,
-          stderr: "fatal: '/home/me/.worktrees/repo/feature' contains modified or untracked files, use --force to delete it\n"
-        }
+        args: STATUS_ARGS,
+        cwd: '/home/me/.worktrees/repo/feature',
+        stdout: '?? scratch.txt\0'
+      },
+      {
+        args: STATUS_ARGS,
+        cwd: '/home/me/.worktrees/repo/feature',
+        stdout: '?? scratch.txt\0'
       }
     ]
   });
@@ -965,7 +1043,7 @@ test('removeProjectWorktree cancels when dirty worktree force removal is decline
 
   await removeProjectWorktree(context.runtime);
 
-  assert.equal(context.gitCalls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'remove').length, 1);
+  assert.equal(context.gitCalls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'remove').length, 0);
   assert.match(context.stdout, /Removal cancelled\./);
 });
 
@@ -1100,12 +1178,9 @@ test('clean command skips dirty closed PR worktrees', async () => {
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
       { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: MULTI_LIST },
       {
-        args: ['worktree', 'remove', '/home/me/.worktrees/repo/old'],
-        cwd: '/repo',
-        error: {
-          exitCode: 128,
-          stderr: "fatal: '/home/me/.worktrees/repo/old' contains modified or untracked files, use --force to delete it\n"
-        }
+        args: STATUS_ARGS,
+        cwd: '/home/me/.worktrees/repo/old',
+        stdout: ' M package.json\0'
       }
     ]
   });

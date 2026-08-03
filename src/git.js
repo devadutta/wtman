@@ -50,7 +50,7 @@ export async function listWorktrees(runtime, { cwd = runtime.cwd } = {}) {
 }
 
 export async function getWorktreeStatusEntries(runtime, worktreePath) {
-  const output = await gitOutput(runtime, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: worktreePath });
+  const output = await gitOutput(runtime, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: worktreePath });
   return parseStatusPorcelain(output);
 }
 
@@ -331,16 +331,176 @@ export function isDirtyWorktreeRemoveError(error) {
   return /contains modified or untracked files/i.test(output) && /--force/.test(output);
 }
 
-export async function removeWorktree(runtime, repoRoot, worktreePath, { force = false } = {}) {
+const DELETE_CONCURRENCY = 32;
+
+async function mapWithConcurrency(items, limit, task) {
+  let nextIndex = 0;
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      await task(item);
+    }
+  });
+
+  await Promise.all(workers);
+}
+
+async function collectWorktreeEntries(runtime, worktreePath) {
+  let pendingDirectories = [{ path: worktreePath, depth: 0 }];
+  const files = [];
+  const directories = [];
+  let rootExists = true;
+
+  while (pendingDirectories.length > 0) {
+    const nextDirectories = [];
+
+    await mapWithConcurrency(pendingDirectories, DELETE_CONCURRENCY, async (directory) => {
+      let entries;
+
+      try {
+        entries = await runtime.fs.readdir(directory.path, { withFileTypes: true });
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          if (directory.depth === 0) {
+            rootExists = false;
+          }
+          return;
+        }
+
+        throw error;
+      }
+
+      for (const entry of entries) {
+        if (directory.depth === 0 && entry.name === '.git') {
+          continue;
+        }
+
+        const entryPath = path.join(directory.path, entry.name);
+
+        if (entry.isDirectory()) {
+          const childDirectory = {
+            path: entryPath,
+            depth: directory.depth + 1
+          };
+          directories.push(childDirectory);
+          nextDirectories.push(childDirectory);
+        } else {
+          files.push(entryPath);
+        }
+      }
+    });
+
+    pendingDirectories = nextDirectories;
+  }
+
+  return {
+    rootExists,
+    files,
+    directories
+  };
+}
+
+async function deleteEntries(runtime, entries, remove, onDeleted) {
+  let firstError;
+
+  await mapWithConcurrency(entries, DELETE_CONCURRENCY, async (entry) => {
+    try {
+      await remove(entry);
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !firstError) {
+        firstError = error;
+      }
+    } finally {
+      onDeleted();
+    }
+  });
+
+  if (firstError) {
+    throw firstError;
+  }
+}
+
+async function deleteWorktreeContents(runtime, inventory, onProgress) {
+  const total = inventory.files.length + inventory.directories.length;
+  let completed = 0;
+
+  function report() {
+    onProgress?.({ phase: 'deleting', completed, total });
+  }
+
+  report();
+  await deleteEntries(
+    runtime,
+    inventory.files,
+    (filePath) => runtime.fs.rm(filePath, { force: true }),
+    () => {
+      completed += 1;
+      report();
+    }
+  );
+
+  const directoriesByDepth = new Map();
+
+  for (const directory of inventory.directories) {
+    const atDepth = directoriesByDepth.get(directory.depth) || [];
+    atDepth.push(directory);
+    directoriesByDepth.set(directory.depth, atDepth);
+  }
+
+  const depths = [...directoriesByDepth.keys()].toSorted((left, right) => right - left);
+
+  for (const depth of depths) {
+    await deleteEntries(
+      runtime,
+      directoriesByDepth.get(depth),
+      (directory) => runtime.fs.rmdir(directory.path),
+      () => {
+        completed += 1;
+        report();
+      }
+    );
+  }
+}
+
+export async function removeWorktree(runtime, repoRoot, worktreePath, { force = false, onProgress } = {}) {
+  if (!force) {
+    const statusEntries = await getWorktreeStatusEntries(runtime, worktreePath);
+
+    if (statusEntries.length > 0) {
+      const message = `'${worktreePath}' contains modified or untracked files, use --force to delete it`;
+      const error = new Error(message);
+      error.exitCode = 128;
+      error.stderr = `fatal: ${message}\n`;
+      throw error;
+    }
+  }
+
+  onProgress?.({ phase: 'scanning', completed: 0, total: 0 });
+  const inventory = await collectWorktreeEntries(runtime, worktreePath);
+
+  if (inventory.rootExists) {
+    try {
+      await deleteWorktreeContents(runtime, inventory, onProgress);
+    } catch {
+      // Git's recursive removal remains the fallback for permissions and files
+      // that appear while the worktree is being deleted.
+    }
+  }
+
+  const total = inventory.files.length + inventory.directories.length;
+  onProgress?.({ phase: 'metadata', completed: total, total });
   const args = ['worktree', 'remove'];
 
-  if (force) {
+  if (force || inventory.rootExists) {
     args.push('--force');
   }
 
   args.push(worktreePath);
   await runtime.git(args, { cwd: repoRoot });
   await runtime.fs.rm(worktreePath, { recursive: true, force: true });
+  onProgress?.({ phase: 'complete', completed: total, total });
 }
 
 export function isSamePath(left, right) {

@@ -11,8 +11,12 @@ const ICONS = {
 
 const ANSI_RED = '\x1b[31m';
 const ANSI_DEFAULT_FOREGROUND = '\x1b[39m';
+const ANSI_CLEAR_LINE = '\x1b[2K';
+const ANSI_HIDE_CURSOR = '\x1b[?25l';
+const ANSI_SHOW_CURSOR = '\x1b[?25h';
 const OSC_8_END = '\x1b]8;;\x1b\\';
 const AUTO_WORKTREE_NAME = 'auto';
+const PROGRESS_RENDER_INTERVAL_MS = 50;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -349,8 +353,21 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
     });
   }
 
+  async function removeWithProgress({ force = false } = {}) {
+    const progress = createRemovalProgress(output, selected.path);
+
+    try {
+      await removeWorktree(runtime, repo.currentRoot, selected.path, {
+        force,
+        onProgress: progress.update
+      });
+    } finally {
+      progress.stop();
+    }
+  }
+
   try {
-    await removeWorktree(runtime, repo.currentRoot, selected.path);
+    await removeWithProgress();
   } catch (error) {
     if (!isDirtyWorktreeRemoveError(error)) {
       throw error;
@@ -370,11 +387,85 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
       return 'cancelled';
     }
 
-    await removeWorktree(runtime, repo.currentRoot, selected.path, { force: true });
+    await removeWithProgress({ force: true });
   }
 
   output.write(`Removed worktree: ${selected.path}\n`);
   return 'removed';
+}
+
+function createRemovalProgress(output, worktreePath) {
+  if (!output?.isTTY) {
+    return {
+      update() {},
+      stop() {}
+    };
+  }
+
+  const rawName = path.basename(worktreePath);
+  const name = rawName.length > 24 ? `${rawName.slice(0, 21)}...` : rawName;
+  const terminalWidth = Number.isFinite(output.columns) ? output.columns : 80;
+  const barWidth = Math.max(10, Math.min(28, terminalWidth - name.length - 43));
+  let visible = false;
+  let lastRenderedAt = 0;
+  let lastPhase = '';
+  let lastCompleted = -1;
+
+  function writeStatus(message) {
+    if (!visible) {
+      output.write(ANSI_HIDE_CURSOR);
+      visible = true;
+    }
+
+    output.write(`\r${ANSI_CLEAR_LINE}${message}`);
+  }
+
+  function update({ phase, completed, total }) {
+    const now = Date.now();
+    const shouldRender = phase !== lastPhase
+      || completed === total
+      || now - lastRenderedAt >= PROGRESS_RENDER_INTERVAL_MS;
+
+    if (!shouldRender || (phase === lastPhase && completed === lastCompleted)) {
+      return;
+    }
+
+    lastPhase = phase;
+    lastCompleted = completed;
+    lastRenderedAt = now;
+
+    if (phase === 'scanning') {
+      writeStatus(`Indexing ${name}…`);
+      return;
+    }
+
+    if (phase === 'metadata') {
+      writeStatus(`Finalizing ${name}…`);
+      return;
+    }
+
+    if (phase === 'complete') {
+      return;
+    }
+
+    const ratio = total === 0 ? 1 : Math.min(1, completed / total);
+    const filledWidth = Math.round(ratio * barWidth);
+    const bar = `${'█'.repeat(filledWidth)}${'░'.repeat(barWidth - filledWidth)}`;
+    const percent = String(Math.round(ratio * 100)).padStart(3);
+    const count = `${completed.toLocaleString('en-US')}/${total.toLocaleString('en-US')}`;
+    writeStatus(`Deleting ${name}  ${bar}  ${percent}%  ${count}`);
+  }
+
+  function stop() {
+    if (!visible) {
+      return;
+    }
+
+    output.write(`\r${ANSI_CLEAR_LINE}${ANSI_SHOW_CURSOR}`);
+    visible = false;
+  }
+
+  return { update, stop };
 }
 
 async function promptConfig(runtime, repoName, currentConfig = defaultConfig(repoName)) {
@@ -493,12 +584,13 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
 
   const output = printPath ? runtime.stderr : runtime.stdout;
   let refreshedPullRequestsByBranch;
+  let currentRepo = repo;
 
   while (true) {
     const worktreeOptions = refreshedPullRequestsByBranch
       ? { pullRequestsByBranch: refreshedPullRequestsByBranch }
       : {};
-    const worktreeSelect = await worktreeChoices(runtime, repo, repo.worktrees, worktreeOptions);
+    const worktreeSelect = await worktreeChoices(runtime, currentRepo, currentRepo.worktrees, worktreeOptions);
     const menuResult = typeof runtime.prompts.worktreeMenu === 'function'
       ? await runtime.prompts.worktreeMenu(
         'Select a worktree:',
@@ -515,8 +607,8 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
       };
 
     if (menuResult.action === 'refresh') {
-      refreshedPullRequestsByBranch = await getPullRequestsByBranch(runtime, repo.currentRoot, {
-        repoName: repo.repoName,
+      refreshedPullRequestsByBranch = await getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
+        repoName: currentRepo.repoName,
         refresh: true
       });
       continue;
@@ -524,6 +616,13 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
 
     if (menuResult.action === 'switch') {
       writeSelectedWorktree(runtime, menuResult.value, { printPath });
+      return;
+    }
+
+    if (menuResult.action === 'quit') {
+      if (printPath) {
+        runtime.stdout.write(`${runtime.cwd}\n`);
+      }
       return;
     }
 
@@ -536,39 +635,32 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
       });
 
       if (printPath) {
-        runtime.stdout.write(`${targetPath}\n`);
+        output.write(`Created ${displayPath(targetPath, runtime.homeDir)}. Select it and press Enter to switch.\n`);
       }
 
-      return;
+      currentRepo = await discoverRepo(runtime);
+      continue;
     }
 
     if (menuResult.action === 'remove') {
-      if (!isRemovableWorktree(repo, menuResult.value)) {
+      if (!isRemovableWorktree(currentRepo, menuResult.value)) {
         output.write(`Selected worktree cannot be removed: ${displayPath(menuResult.value.path, runtime.homeDir)}\n`);
-        if (printPath) {
-          runtime.stdout.write(`${runtime.cwd}\n`);
-        }
-        return;
+        continue;
       }
 
-      const config = await ensureProjectConfig(runtime, repo);
-      await removeSelectedWorktree(runtime, repo, config, menuResult.value, { output });
+      const config = await ensureProjectConfig(runtime, currentRepo);
+      const result = await removeSelectedWorktree(runtime, currentRepo, config, menuResult.value, { output });
 
-      if (printPath) {
-        runtime.stdout.write(`${runtime.cwd}\n`);
+      if (result === 'removed') {
+        currentRepo = await discoverRepo(runtime);
       }
 
-      return;
+      continue;
     }
 
     if (menuResult.action === 'config') {
       await configureProject(runtime, { forceEdit: true, output });
-
-      if (printPath) {
-        runtime.stdout.write(`${runtime.cwd}\n`);
-      }
-
-      return;
+      continue;
     }
 
     throw new WtmanError(`unknown menu action: ${menuResult.action}`);

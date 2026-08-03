@@ -102,24 +102,52 @@ test('removeWorktree deletes the worktree directory after git removes it', async
   const repoRoot = path.join(tempDir, 'repo');
   const worktreePath = path.join(tempDir, 'worktrees', 'feature');
   await fs.mkdir(path.join(worktreePath, 'nested'), { recursive: true });
+  await fs.writeFile(path.join(worktreePath, '.git'), 'gitdir: /tmp/example\n');
   await fs.writeFile(path.join(worktreePath, 'nested', 'file.txt'), 'leftover\n');
 
   const gitCalls = [];
+  const progress = [];
   const runtime = {
     fs,
     async git(args, options = {}) {
       gitCalls.push({ args, cwd: options.cwd });
+
+      if (args[0] === 'status') {
+        return { stdout: '', stderr: '' };
+      }
+
+      await fs.stat(path.join(worktreePath, '.git'));
+      await assert.rejects(() => fs.stat(path.join(worktreePath, 'nested')), { code: 'ENOENT' });
       return { stdout: '', stderr: '' };
     }
   };
 
-  await removeWorktree(runtime, repoRoot, worktreePath);
+  await removeWorktree(runtime, repoRoot, worktreePath, {
+    onProgress(update) {
+      progress.push(update);
+    }
+  });
 
   assert.deepEqual(gitCalls, [
     {
-      args: ['worktree', 'remove', worktreePath],
+      args: ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'],
+      cwd: worktreePath
+    },
+    {
+      args: ['worktree', 'remove', '--force', worktreePath],
       cwd: repoRoot
     }
   ]);
+  assert.deepEqual([...new Set(progress.map((update) => update.phase))], [
+    'scanning',
+    'deleting',
+    'metadata',
+    'complete'
+  ]);
+  assert.deepEqual(progress.findLast((update) => update.phase === 'deleting'), {
+    phase: 'deleting',
+    completed: 2,
+    total: 2
+  });
   await assert.rejects(() => fs.stat(worktreePath), { code: 'ENOENT' });
 });

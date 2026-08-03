@@ -165,6 +165,37 @@ test('worktreeMenu supports refresh new remove and config shortcuts in a TTY', a
   assert.deepEqual(await configSelection, { action: 'config' });
 });
 
+test('worktreeMenu quits with q or Escape without cancellation', async () => {
+  const qContext = makeTtyRuntime();
+  const qPrompts = createPromptAdapter(qContext.runtime);
+  const qSelection = qPrompts.worktreeMenu('Select:', [
+    { label: 'First', value: 'first' }
+  ]);
+
+  await waitForPromptRender();
+  qContext.runtime.stdin.write('q');
+
+  assert.deepEqual(await qSelection, { action: 'quit' });
+  assert.match(qContext.stderr, /q\/Esc quit/);
+
+  const escapeContext = makeTtyRuntime();
+  const escapePrompts = createPromptAdapter(escapeContext.runtime);
+  const escapeSelection = escapePrompts.worktreeMenu('Select:', [
+    { label: 'First', value: 'first' }
+  ]);
+
+  await waitForPromptRender();
+  const startedAt = Date.now();
+  escapeContext.runtime.stdin.write('\x1b');
+
+  assert.deepEqual(await Promise.race([
+    escapeSelection,
+    new Promise((resolve) => setTimeout(() => resolve('timed out'), 250))
+  ]), { action: 'quit' });
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(escapeContext.runtime.stdin.isRaw, false);
+});
+
 test('select cancels on ctrl-c in a TTY', async () => {
   const context = makeTtyRuntime();
   const prompts = createPromptAdapter(context.runtime);

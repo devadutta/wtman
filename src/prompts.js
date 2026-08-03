@@ -6,8 +6,10 @@ import { SelectionCancelledError } from './errors.js';
 const ANSI_INVERSE = '\x1b[7m';
 const ANSI_INVERSE_OFF = '\x1b[27m';
 const ANSI_CLEAR_LINE = '\x1b[2K';
+const ANSI_CLEAR_DOWN = '\x1b[J';
 const ANSI_HIDE_CURSOR = '\x1b[?25l';
 const ANSI_SHOW_CURSOR = '\x1b[?25h';
+const MENU_ESCAPE_TIMEOUT_MS = 50;
 
 function promptOutput(runtime) {
   return runtime.stderr || runtime.stdout;
@@ -38,7 +40,7 @@ function menuLines(label, choices, selectedIndex, { header } = {}) {
     `? ${label}`,
     ...(header ? [`  ${header}`] : []),
     ...choices.map((choice, index) => `  ${index === selectedIndex ? highlightedSelection(choice.label) : choice.label}`),
-    '  Enter switch  f refresh  n new  r remove  c config'
+    '  ↑↓ move  Enter switch  f refresh  n new  r remove  c config  q/Esc quit'
   ];
 }
 
@@ -61,7 +63,7 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
   let settled = false;
   const previousRawMode = runtime.stdin.isRaw;
 
-  emitKeypressEvents(runtime.stdin);
+  emitKeypressEvents(runtime.stdin, { escapeCodeTimeout: MENU_ESCAPE_TIMEOUT_MS });
   runtime.stdin.resume();
   runtime.stdin.setRawMode(true);
   output.write(ANSI_HIDE_CURSOR);
@@ -75,6 +77,9 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
       runtime.stdin.off('keypress', onKeypress);
       runtime.stdin.setRawMode(Boolean(previousRawMode));
       runtime.stdin.pause();
+      if (renderedLineCount > 0) {
+        output.write(`\x1b[${renderedLineCount}A\r${ANSI_CLEAR_DOWN}`);
+      }
       output.write(ANSI_SHOW_CURSOR);
     }
 
@@ -95,7 +100,7 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
       }
 
       if (key.name === 'escape') {
-        settle(reject, new SelectionCancelledError());
+        settle(resolve, { action: 'quit' });
         return;
       }
 
@@ -135,6 +140,11 @@ function runMenuPrompt(runtime, label, choices, options = {}) {
 
       if (shortcut === 'c') {
         settle(resolve, { action: 'config' });
+        return;
+      }
+
+      if (shortcut === 'q') {
+        settle(resolve, { action: 'quit' });
       }
     }
 
@@ -315,9 +325,10 @@ export function createPromptAdapter(runtime) {
       output.write('  n. New worktree\n');
       output.write('  r. Remove first listed worktree\n');
       output.write('  c. Config\n');
+      output.write('  q. Quit\n');
 
       while (true) {
-        const answer = (await question('Select a number, f, n, r, or c: ')).trim().toLowerCase();
+        const answer = (await question('Select a number, f, n, r, c, or q: ')).trim().toLowerCase();
 
         if (!answer) {
           return { action: 'switch', value: choices[0].value };
@@ -337,6 +348,10 @@ export function createPromptAdapter(runtime) {
 
         if (answer === 'c') {
           return { action: 'config' };
+        }
+
+        if (answer === 'q') {
+          return { action: 'quit' };
         }
 
         const selectedIndex = Number.parseInt(answer, 10) - 1;
