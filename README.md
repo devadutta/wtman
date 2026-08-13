@@ -6,7 +6,7 @@ It stores per-repository config, creates new worktrees with predictable branch n
 
 ## Requirements
 
-- Node.js 20 or newer
+- Bun 1.3 or newer
 - Git
 
 ## Installation
@@ -14,7 +14,8 @@ It stores per-repository config, creates new worktrees with predictable branch n
 From this checkout:
 
 ```sh
-npm install -g .
+bun install
+bun link
 ```
 
 Then verify the CLI is available:
@@ -89,7 +90,9 @@ wtman help
 
 When `wtman new` creates a branch, it uses the primary worktree as the base. If that worktree has an upstream remote branch, `wtman` fetches first and branches from the updated remote-tracking ref; repositories without an upstream fall back to the primary worktree `HEAD`.
 
-Interactive worktree menus use arrow keys and these keys:
+The interactive browser is built with React and Ink. It runs in the terminal's alternate screen, so refreshing data or opening a nested prompt does not leave partial frames in scrollback.
+
+Interactive worktree menus use arrow keys (or `j`/`k`) and these keys:
 
 | Key | Action |
 | --- | --- |
@@ -100,7 +103,7 @@ Interactive worktree menus use arrow keys and these keys:
 | `c` | Edit config. |
 | `q`, `Esc` | Close the menu. |
 
-The menu stays open after refresh, create, remove, and config actions. Press `Enter` to switch to the highlighted worktree, or `q`/`Esc` to close it. Worktree removal shows file-deletion progress in interactive terminals.
+`Home`, `End`, `Page Up`, and `Page Down` work in longer lists. The menu stays open after refresh, create, remove, and config actions. Press `Enter` to switch to the highlighted worktree, or `q`/`Esc` to close it. Worktree removal shows an Ink-rendered progress view in interactive terminals.
 
 If the GitHub CLI (`gh`) is installed and authenticated, `wtman` shows linked PR numbers and states (`open`, `closed`, or `merged`) for matching worktree branches. PR numbers are terminal hyperlinks in supported TTYs. The interactive menu renders cached PR status immediately, refreshes it in the background on startup, and redraws changed rows in place. Press `f` for another manual refresh, or run `wtman clean` to refresh before cleanup. If `gh` is unavailable or PR lookup fails, worktree commands continue with cached PR metadata when available.
 
@@ -140,14 +143,16 @@ Project config is stored at:
 ~/.config/wtman/<repo-name>/config.json
 ```
 
+If `XDG_CONFIG_HOME` is set, `wtman` stores config beneath that directory instead.
+
 Example:
 
 ```json
 {
   "worktreeDir": "~/.worktrees/app",
-  "setupCommand": "npm install",
-  "startCommand": "npm run dev",
-  "cleanupCommand": "npm run clean"
+  "setupCommand": "bun install",
+  "startCommand": "bun run dev",
+  "cleanupCommand": "bun run clean"
 }
 ```
 
@@ -167,13 +172,13 @@ Commands run from the selected worktree directory.
 Run the test suite:
 
 ```sh
-npm test
+bun test
 ```
 
 Run a basic CLI smoke check:
 
 ```sh
-npm run smoke
+bun run smoke
 ```
 
 ## License

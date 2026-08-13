@@ -2,20 +2,26 @@
   "name": "wtman",
   "version": "0.1.0",
   "description": "A small Git worktree manager.",
+  "packageManager": "bun@1.3.1",
   "type": "module",
   "bin": {
     "wtman": "./bin/wtman.js"
   },
+  "files": [
+    "bin",
+    "src"
+  ],
   "scripts": {
-    "test": "node --test",
-    "smoke": "node ./bin/wtman.js --help"
+    "test": "bun test",
+    "smoke": "bun run ./bin/wtman.js --help"
   },
   "engines": {
-    "node": ">=20"
+    "bun": ">=1.3.0"
   },
   "license": "MIT",
   "dependencies": {
-    "@inquirer/prompts": "^8.5.2",
-    "fast-string-width": "^3.0.2"
+    "fast-string-width": "^3.0.2",
+    "ink": "^7.1.1",
+    "react": "^19.2.8"
   }
 }

@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { afterAll, test } from 'bun:test';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parsePullRequests, parseStatusPorcelain, parseWorktreePorcelain, pullRequestsByBranch, removeWorktree } from '../src/git.js';
+
+const cleanupDirectories = [];
+
+afterAll(async () => {
+  await Promise.all(cleanupDirectories.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+});
 
 test('parseWorktreePorcelain parses primary, branch, and detached entries', () => {
   const output = `worktree /repo
@@ -95,9 +101,9 @@ test('parsePullRequests normalizes open, closed, and merged states', () => {
   assert.equal(pullRequestsByBranch(pullRequests).get('feature').number, 1);
 });
 
-test('removeWorktree deletes the worktree directory after git removes it', async (t) => {
+test('removeWorktree deletes the worktree directory after git removes it', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wtman-git-test-'));
-  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  cleanupDirectories.push(tempDir);
 
   const repoRoot = path.join(tempDir, 'repo');
   const worktreePath = path.join(tempDir, 'worktrees', 'feature');

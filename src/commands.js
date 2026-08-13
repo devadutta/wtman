@@ -5,18 +5,10 @@ import { addWorktree, discoverRepo, getPullRequestsByBranch, getWorktreeStatusEn
 import { assertSafeWorktreeName, displayPath } from './path-utils.js';
 import { WtmanError } from './errors.js';
 
-const ICONS = {
-  branch: ''
-};
-
 const ANSI_RED = '\x1b[31m';
 const ANSI_DEFAULT_FOREGROUND = '\x1b[39m';
-const ANSI_CLEAR_LINE = '\x1b[2K';
-const ANSI_HIDE_CURSOR = '\x1b[?25l';
-const ANSI_SHOW_CURSOR = '\x1b[?25h';
 const OSC_8_END = '\x1b]8;;\x1b\\';
 const AUTO_WORKTREE_NAME = 'auto';
-const PROGRESS_RENDER_INTERVAL_MS = 50;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -54,6 +46,16 @@ async function worktreeChoices(runtime, repo, worktrees, options = {}) {
     header,
     choices: rows.map((row, index) => ({
       label: labels[index],
+      compactLabel: [
+        row.name,
+        worktreeBranch(row.worktree),
+        row.changeCount === '?'
+          ? '? changes'
+          : row.changeCount === 0
+            ? 'clean'
+            : `${row.changeCount} changed`,
+        row.pr ? `${row.pr} ${row.state}`.trim() : 'no PR'
+      ].join(' · '),
       value: row.worktree
     }))
   };
@@ -210,9 +212,10 @@ async function worktreeTableRow(runtime, repo, worktree, now, options = {}) {
     sortModifiedAt,
     modified: formatModifiedTime(modifiedAt, now),
     name: path.basename(worktree.path),
-    branch: `${ICONS.branch} ${worktreeBranch(worktree)}`,
+    branch: worktreeBranch(worktree),
     pr: formatPullRequest(pullRequest, options),
     state: pullRequest?.state || '',
+    changeCount: changes,
     changes: formatChanges(changes, options)
   };
 }
@@ -234,7 +237,7 @@ function formatWorktreeRows(rows, { header = true } = {}) {
   const columns = [
     { key: 'modified', label: 'Modified' },
     { key: 'name', label: 'Folder' },
-    { key: 'branch', label: `${ICONS.branch} Branch` },
+    { key: 'branch', label: 'Branch' },
     { key: 'pr', label: 'PR' },
     { key: 'state', label: 'State' },
     { key: 'changes', label: 'Changes' }
@@ -354,7 +357,10 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
   }
 
   async function removeWithProgress({ force = false } = {}) {
-    const progress = createRemovalProgress(output, selected.path);
+    const progress = runtime.prompts.createProgress?.(output, selected.path) || {
+      update() {},
+      async stop() {}
+    };
 
     try {
       await removeWorktree(runtime, repo.currentRoot, selected.path, {
@@ -362,7 +368,7 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
         onProgress: progress.update
       });
     } finally {
-      progress.stop();
+      await progress.stop();
     }
   }
 
@@ -392,80 +398,6 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
 
   output.write(`Removed worktree: ${selected.path}\n`);
   return 'removed';
-}
-
-function createRemovalProgress(output, worktreePath) {
-  if (!output?.isTTY) {
-    return {
-      update() {},
-      stop() {}
-    };
-  }
-
-  const rawName = path.basename(worktreePath);
-  const name = rawName.length > 24 ? `${rawName.slice(0, 21)}...` : rawName;
-  const terminalWidth = Number.isFinite(output.columns) ? output.columns : 80;
-  const barWidth = Math.max(10, Math.min(28, terminalWidth - name.length - 43));
-  let visible = false;
-  let lastRenderedAt = 0;
-  let lastPhase = '';
-  let lastCompleted = -1;
-
-  function writeStatus(message) {
-    if (!visible) {
-      output.write(ANSI_HIDE_CURSOR);
-      visible = true;
-    }
-
-    output.write(`\r${ANSI_CLEAR_LINE}${message}`);
-  }
-
-  function update({ phase, completed, total }) {
-    const now = Date.now();
-    const shouldRender = phase !== lastPhase
-      || completed === total
-      || now - lastRenderedAt >= PROGRESS_RENDER_INTERVAL_MS;
-
-    if (!shouldRender || (phase === lastPhase && completed === lastCompleted)) {
-      return;
-    }
-
-    lastPhase = phase;
-    lastCompleted = completed;
-    lastRenderedAt = now;
-
-    if (phase === 'scanning') {
-      writeStatus(`Indexing ${name}…`);
-      return;
-    }
-
-    if (phase === 'metadata') {
-      writeStatus(`Finalizing ${name}…`);
-      return;
-    }
-
-    if (phase === 'complete') {
-      return;
-    }
-
-    const ratio = total === 0 ? 1 : Math.min(1, completed / total);
-    const filledWidth = Math.round(ratio * barWidth);
-    const bar = `${'█'.repeat(filledWidth)}${'░'.repeat(barWidth - filledWidth)}`;
-    const percent = String(Math.round(ratio * 100)).padStart(3);
-    const count = `${completed.toLocaleString('en-US')}/${total.toLocaleString('en-US')}`;
-    writeStatus(`Deleting ${name}  ${bar}  ${percent}%  ${count}`);
-  }
-
-  function stop() {
-    if (!visible) {
-      return;
-    }
-
-    output.write(`\r${ANSI_CLEAR_LINE}${ANSI_SHOW_CURSOR}`);
-    visible = false;
-  }
-
-  return { update, stop };
 }
 
 async function promptConfig(runtime, repoName, currentConfig = defaultConfig(repoName)) {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { afterAll, test } from 'bun:test';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,11 @@ import { readConfig, writeConfig } from '../src/config.js';
 const STATUS_ARGS = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'];
 const UPSTREAM_ARGS = ['rev-parse', '--symbolic-full-name', '@{upstream}'];
 const PR_LIST_ARGS = ['pr', 'list', '--state', 'all', '--limit', '500', '--json', 'number,url,state,mergedAt,closedAt,headRefName'];
+const cleanupDirectories = [];
+
+afterAll(async () => {
+  await Promise.all(cleanupDirectories.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+});
 
 const PRIMARY_LIST = `worktree /repo
 HEAD abc123
@@ -62,6 +67,7 @@ async function makeTempRuntime(options = {}) {
   const confirmCalls = [];
   const selectCalls = [];
   const menuCalls = [];
+  const progressCalls = [];
   const gitResponses = [...(options.gitResponses || [])];
   const ghResponses = [...(options.ghResponses || [])];
   const promptAnswers = [...(options.promptAnswers || [])];
@@ -165,6 +171,19 @@ async function makeTempRuntime(options = {}) {
         }
 
         return { action: 'switch', value: choices[0].value };
+      },
+      createProgress(output, worktreePath) {
+        const call = { output, worktreePath, updates: [], stopped: false };
+        progressCalls.push(call);
+
+        return {
+          update(progress) {
+            call.updates.push(progress);
+          },
+          async stop() {
+            call.stopped = true;
+          }
+        };
       }
     },
     async git(args, options = {}) {
@@ -240,6 +259,7 @@ async function makeTempRuntime(options = {}) {
     confirmCalls,
     selectCalls,
     menuCalls,
+    progressCalls,
     get stdout() {
       return stdout;
     },
@@ -570,9 +590,9 @@ test('list command renders worktrees as a table', async () => {
   await run(['list'], context.runtime);
 
   const lines = context.stdout.trimEnd().split('\n');
-  assert.match(lines[0], /^Modified\s+Folder\s+ Branch\s+PR\s+State\s+Changes$/);
-  assert.match(lines[1], /^\?\s+repo\s+ main\s+0$/);
-  assert.match(lines[2], /^\?\s+feature\s+ feature\s+\x1b\[31m2\x1b\[39m$/);
+  assert.match(lines[0], /^Modified\s+Folder\s+Branch\s+PR\s+State\s+Changes$/);
+  assert.match(lines[1], /^\?\s+repo\s+main\s+0$/);
+  assert.match(lines[2], /^\?\s+feature\s+feature\s+\x1b\[31m2\x1b\[39m$/);
   assert.doesNotMatch(context.stdout, /\/home\/me|\.worktrees|\[primary\]||/);
 });
 
@@ -791,9 +811,9 @@ test('list command keeps main first and sorts branches by modified time', async 
   await run(['list'], context.runtime);
 
   const lines = context.stdout.trimEnd().split('\n');
-  assert.match(lines[1], /^7d ago\s+repo\s+ main\s+0$/);
-  assert.match(lines[2], /^1h ago\s+new\s+ new\s+0$/);
-  assert.match(lines[3], /^1d ago\s+old\s+ old\s+0$/);
+  assert.match(lines[1], /^7d ago\s+repo\s+main\s+0$/);
+  assert.match(lines[2], /^1h ago\s+new\s+new\s+0$/);
+  assert.match(lines[3], /^1d ago\s+old\s+old\s+0$/);
 });
 
 test('createWorktree creates a branch when it does not exist and runs setup command', async () => {
@@ -1007,8 +1027,8 @@ test('removeProjectWorktree runs cleanup command before removing selected worktr
     }
   ]);
   assert.equal(context.selectCalls[0].label, 'Select a worktree to remove:');
-  assert.match(context.selectCalls[0].options.header, /^Modified\s+Folder\s+ Branch\s+PR\s+State\s+Changes$/);
-  assert.match(context.selectCalls[0].choices[0].label, /^\?\s+feature\s+ feature\s+0$/);
+  assert.match(context.selectCalls[0].options.header, /^Modified\s+Folder\s+Branch\s+PR\s+State\s+Changes$/);
+  assert.match(context.selectCalls[0].choices[0].label, /^\?\s+feature\s+feature\s+0$/);
   assert.deepEqual(context.confirmCalls, [
     'Remove worktree /home/me/.worktrees/repo/feature?'
   ]);
@@ -1043,9 +1063,9 @@ test('remove command removes a worktree by folder name without prompting for sel
   assert.match(context.stdout, /Removed worktree:/);
 });
 
-test('remove command renders worktree deletion progress in a TTY', async (t) => {
+test('remove command reports worktree deletion progress through the TUI renderer', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wtman-progress-test-'));
-  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  cleanupDirectories.push(tempDir);
   const worktreePath = path.join(tempDir, 'feature');
   await fs.mkdir(path.join(worktreePath, 'node_modules', 'package'), { recursive: true });
   await fs.writeFile(path.join(worktreePath, '.git'), 'gitdir: /tmp/example\n');
@@ -1072,12 +1092,15 @@ test('remove command renders worktree deletion progress in a TTY', async (t) => 
 
   await run(['remove', 'feature'], context.runtime);
 
-  assert.match(context.stdout, /Indexing feature/);
-  assert.match(context.stdout, /Deleting feature/);
-  assert.match(context.stdout, /100%/);
-  assert.match(context.stdout, /Finalizing feature/);
-  assert.match(context.stdout, /\x1b\[\?25l/);
-  assert.match(context.stdout, /\x1b\[\?25h/);
+  assert.equal(context.progressCalls.length, 1);
+  assert.equal(context.progressCalls[0].worktreePath, worktreePath);
+  assert.equal(context.progressCalls[0].stopped, true);
+  assert.deepEqual([...new Set(context.progressCalls[0].updates.map((update) => update.phase))], [
+    'scanning',
+    'deleting',
+    'metadata',
+    'complete'
+  ]);
   await assert.rejects(() => fs.stat(worktreePath), { code: 'ENOENT' });
 });
 
@@ -1418,13 +1441,13 @@ test('switchProjectWorktree uses aligned table rows for prompt choices', async (
 
   assert.equal(context.selectCalls.length, 1);
   assert.equal(context.selectCalls[0].label, 'Select a worktree to switch to:');
-  assert.match(context.selectCalls[0].options.header, /^Modified\s+Folder\s+ Branch\s+PR\s+State\s+Changes$/);
+  assert.match(context.selectCalls[0].options.header, /^Modified\s+Folder\s+Branch\s+PR\s+State\s+Changes$/);
 
   const labels = context.selectCalls[0].choices.map((choice) => choice.label);
-  assert.match(labels[0], /^\?\s+repo\s+ main\s+0$/);
-  assert.match(labels[1], /^\?\s+feature\s+ feature\s+0$/);
+  assert.match(labels[0], /^\?\s+repo\s+main\s+0$/);
+  assert.match(labels[1], /^\?\s+feature\s+feature\s+0$/);
   assert.doesNotMatch(labels.join('\n'), /\/home\/me|\.worktrees||/);
-  assert.equal(labels[0].indexOf(' main'), labels[1].indexOf(' feature'));
+  assert.equal(labels[0].indexOf('main'), labels[1].lastIndexOf('feature'));
   assert.equal(labels[0].lastIndexOf('0'), labels[1].lastIndexOf('0'));
 });
 

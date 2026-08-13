@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createPromptAdapter } from './prompts.js';
+import { createPromptAdapter } from './prompts.jsx';
 
 function execFilePromise(file, args, options) {
   return new Promise((resolve, reject) => {
@@ -75,7 +75,7 @@ export function createRuntime(overrides = {}) {
     env,
     fs: overrides.fs || fs,
     homeDir,
-    configHome: overrides.configHome || path.join(homeDir, '.config'),
+    configHome: overrides.configHome || env.XDG_CONFIG_HOME || path.join(homeDir, '.config'),
     stdin: overrides.stdin || process.stdin,
     stdout: overrides.stdout || process.stdout,
     stderr: overrides.stderr || process.stderr,
