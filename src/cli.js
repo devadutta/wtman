@@ -22,20 +22,44 @@ Usage:
 
 const SHELL_INIT = `wtman() {
   if [ "$#" -eq 0 ]; then
+    local wtman_target_file
     local wtman_target
-    wtman_target="$(command wtman --default-print-path)" || return $?
-    if [ -n "$wtman_target" ]; then
-      cd "$wtman_target"
+    local wtman_status
+    wtman_target_file="$(mktemp -t wtman-switch.XXXXXX)" || return $?
+    command wtman --default-write-path "$wtman_target_file"
+    wtman_status=$?
+    if [ "$wtman_status" -eq 0 ] && [ -s "$wtman_target_file" ]; then
+      wtman_target="$(cat "$wtman_target_file")"
+      rm -f "$wtman_target_file"
+      if [ -n "$wtman_target" ]; then
+        cd "$wtman_target" || return $?
+      fi
     else
-      command wtman
+      rm -f "$wtman_target_file"
+      if [ "$wtman_status" -eq 0 ]; then
+        command wtman
+        return $?
+      fi
     fi
+    return "$wtman_status"
   elif [ "$1" = "switch" ]; then
     shift
+    local wtman_target_file
     local wtman_target
-    wtman_target="$(command wtman switch --print-path "$@")" || return $?
-    if [ -n "$wtman_target" ]; then
-      cd "$wtman_target"
+    local wtman_status
+    wtman_target_file="$(mktemp -t wtman-switch.XXXXXX)" || return $?
+    command wtman switch --write-path "$wtman_target_file" "$@"
+    wtman_status=$?
+    if [ "$wtman_status" -eq 0 ] && [ -s "$wtman_target_file" ]; then
+      wtman_target="$(cat "$wtman_target_file")"
+      rm -f "$wtman_target_file"
+      if [ -n "$wtman_target" ]; then
+        cd "$wtman_target" || return $?
+      fi
+    else
+      rm -f "$wtman_target_file"
     fi
+    return "$wtman_status"
   elif [ "$1" = "new" ]; then
     shift
     local wtman_target_file
@@ -75,6 +99,15 @@ export async function run(argv = [], runtime = createRuntime()) {
 
   if (command === '--default-print-path') {
     await defaultProjectSwitchPath(runtime);
+    return;
+  }
+
+  if (command === '--default-write-path') {
+    if (args.length !== 1) {
+      throw new WtmanError('usage: wtman', { exitCode: 2 });
+    }
+
+    await defaultProjectSwitchPath(runtime, { writePath: args[0] });
     return;
   }
 
@@ -136,11 +169,21 @@ export async function run(argv = [], runtime = createRuntime()) {
 
   if (command === 'switch') {
     let printPath = false;
+    let writePath = '';
     let requestedName;
 
-    for (const arg of args) {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+
       if (arg === '--print-path') {
         printPath = true;
+      } else if (arg === '--write-path') {
+        writePath = args[index + 1] || '';
+        index += 1;
+
+        if (!writePath) {
+          throw new WtmanError('usage: wtman switch [name]', { exitCode: 2 });
+        }
       } else if (!requestedName) {
         requestedName = arg;
       } else {
@@ -148,7 +191,11 @@ export async function run(argv = [], runtime = createRuntime()) {
       }
     }
 
-    await switchProjectWorktree(runtime, { printPath, requestedName });
+    if (printPath && writePath) {
+      throw new WtmanError('usage: wtman switch [name]', { exitCode: 2 });
+    }
+
+    await switchProjectWorktree(runtime, { printPath, writePath, requestedName });
     return;
   }
 

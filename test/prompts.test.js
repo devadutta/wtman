@@ -120,7 +120,7 @@ test('select uses arrow keys in a TTY', async () => {
   assert.equal(context.stdout, '');
   assert.match(context.stderr, /Pick one/);
   assert.match(context.stderr, /Second/);
-  assert.match(context.stderr, /▌ First/);
+  assert.match(context.stderr, /› First/);
   assert.equal(context.runtime.stdin.isRaw, false);
 });
 
@@ -227,7 +227,7 @@ test('worktreeMenu applies asynchronous row updates without moving the selection
 
   assert.deepEqual(await selection, { action: 'switch', value: freshSecond });
   assert.match(context.stderr, /Fresh header/);
-  assert.match(context.stderr, /▌ Fresh second/);
+  assert.match(context.stderr, /› Fresh second/);
 });
 
 test('worktreeMenu does not build an asynchronous update after quitting', async () => {

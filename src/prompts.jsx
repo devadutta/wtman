@@ -6,7 +6,9 @@ import { SelectionCancelledError } from './errors.js';
 const COLORS = {
   accent: 'cyan',
   danger: 'red',
+  ink: '#0B0F14',
   muted: 'gray',
+  selection: '#F1C75B',
   success: 'green',
   warning: 'yellow'
 };
@@ -15,10 +17,10 @@ function promptOutput(runtime) {
   return runtime.stderr || runtime.stdout;
 }
 
-function canUseInteractivePrompt(runtime) {
+function canUseInteractivePrompt(runtime, output = promptOutput(runtime)) {
   return Boolean(
     runtime.stdin?.isTTY
-    && promptOutput(runtime)?.isTTY
+    && output?.isTTY
     && typeof runtime.stdin.setRawMode === 'function'
   );
 }
@@ -64,10 +66,11 @@ function KeyHint({ keys, children }) {
 
 function MenuFrame({ label, header, choices, selectedIndex, refreshing, worktreeMenu = false }) {
   const { columns } = useWindowSize();
-  const compact = columns < 72 && choices.some((choice) => choice.compactLabel);
+  const width = Number.isFinite(columns) ? columns : 80;
+  const compact = width < 72 && choices.some((choice) => choice.compactLabel);
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" width={width} paddingX={1}>
       <Box>
         <Text color={COLORS.accent} bold>wtman</Text>
         <Text dimColor> / {label.replace(/:$/, '')}</Text>
@@ -90,10 +93,15 @@ function MenuFrame({ label, header, choices, selectedIndex, refreshing, worktree
           const selected = index === selectedIndex;
 
           return (
-            <Box key={choice.value?.path || String(choice.value)}>
-              <Text color={selected ? COLORS.accent : undefined} bold>{selected ? '▌' : ' '}</Text>
+            <Box
+              key={choice.value?.path || String(choice.value)}
+              backgroundColor={selected ? COLORS.selection : undefined}
+              aria-role="option"
+              aria-state={{ selected }}
+            >
+              <Text color={selected ? COLORS.ink : undefined} bold={selected}>{selected ? '›' : ' '}</Text>
               <Text>{' '}</Text>
-              <Text inverse={selected} bold={selected} wrap="truncate-end">
+              <Text color={selected ? COLORS.ink : undefined} bold={selected} wrap="truncate-end">
                 {compact ? choice.compactLabel || choice.label : choice.label}
               </Text>
             </Box>
@@ -625,7 +633,7 @@ function renderOptions(runtime, output, { alternateScreen = false } = {}) {
 }
 
 async function runInkPrompt(runtime, element, options = {}) {
-  const output = promptOutput(runtime);
+  const output = options.output || promptOutput(runtime);
   const instance = render(element, renderOptions(runtime, output, options));
 
   try {
@@ -684,16 +692,16 @@ export function createPromptAdapter(runtime) {
   }
 
   return {
-    async ask(label, { defaultValue = '', validate } = {}) {
-      if (canUseInteractivePrompt(runtime)) {
+    async ask(label, { defaultValue = '', validate, output = promptOutput(runtime) } = {}) {
+      if (canUseInteractivePrompt(runtime, output)) {
         return runInkPrompt(runtime, (
           <InputPrompt label={label} defaultValue={defaultValue} validate={validate} />
-        ));
+        ), { output });
       }
 
       while (true) {
         const defaultLabel = defaultValue ? ` (${defaultValue})` : '';
-        const answer = (await question(`${label}${defaultLabel}: `)).trim();
+        const answer = (await question(`${label}${defaultLabel}: `, { output })).trim();
         const value = answer || defaultValue;
 
         try {
@@ -704,15 +712,15 @@ export function createPromptAdapter(runtime) {
       }
     },
 
-    async confirm(label, { defaultValue = false } = {}) {
-      if (canUseInteractivePrompt(runtime)) {
+    async confirm(label, { defaultValue = false, output = promptOutput(runtime) } = {}) {
+      if (canUseInteractivePrompt(runtime, output)) {
         return runInkPrompt(runtime, (
           <ConfirmPrompt label={label} defaultValue={defaultValue} />
-        ));
+        ), { output });
       }
 
       const suffix = defaultValue ? 'Y/n' : 'y/N';
-      const answer = (await question(`${label} (${suffix}): `)).trim().toLowerCase();
+      const answer = (await question(`${label} (${suffix}): `, { output })).trim().toLowerCase();
 
       if (!answer) {
         return defaultValue;
@@ -721,17 +729,15 @@ export function createPromptAdapter(runtime) {
       return answer === 'y' || answer === 'yes';
     },
 
-    async select(label, choices, { header } = {}) {
+    async select(label, choices, { header, output = promptOutput(runtime) } = {}) {
       if (choices.length === 0) {
         throw new Error('no choices available');
       }
 
-      const output = promptOutput(runtime);
-
-      if (canUseInteractivePrompt(runtime)) {
+      if (canUseInteractivePrompt(runtime, output)) {
         return runInkPrompt(runtime, (
           <SelectPrompt label={label} choices={choices} header={header} />
-        ), { alternateScreen: true });
+        ), { alternateScreen: true, output });
       }
 
       output.write(`${label}\n`);
@@ -744,7 +750,7 @@ export function createPromptAdapter(runtime) {
       });
 
       while (true) {
-        const answer = (await question('Select a number: ')).trim();
+        const answer = (await question('Select a number: ', { output })).trim();
         const selectedIndex = Number.parseInt(answer, 10) - 1;
 
         if (Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < choices.length) {
@@ -760,10 +766,10 @@ export function createPromptAdapter(runtime) {
         throw new Error('no choices available');
       }
 
-      const output = promptOutput(runtime);
+      const output = options.output || promptOutput(runtime);
       const { header } = options;
 
-      if (canUseInteractivePrompt(runtime)) {
+      if (canUseInteractivePrompt(runtime, output)) {
         return runInkPrompt(runtime, (
           <WorktreeMenuPrompt
             label={label}
@@ -772,7 +778,7 @@ export function createPromptAdapter(runtime) {
             updatePromise={options.updatePromise}
             mapUpdate={options.mapUpdate}
           />
-        ), { alternateScreen: true });
+        ), { alternateScreen: true, output });
       }
 
       Promise.resolve(options.updatePromise).catch(() => {});
@@ -792,7 +798,7 @@ export function createPromptAdapter(runtime) {
       output.write('  q. Quit\n');
 
       while (true) {
-        const answer = (await question('Select a number, f, n, r, c, or q: ')).trim().toLowerCase();
+        const answer = (await question('Select a number, f, n, r, c, or q: ', { output })).trim().toLowerCase();
 
         if (!answer) {
           return { action: 'switch', value: choices[0].value };

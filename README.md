@@ -56,6 +56,14 @@ For zsh, that usually means `~/.zshrc`. After reloading your shell:
 - `wtman switch <name>` changes into a worktree by exact folder or branch name.
 - `wtman new` creates a worktree, runs setup if configured, and changes into the new worktree.
 
+After installing or updating `wtman`, reload the integration in any shell that is already open:
+
+```sh
+eval "$(command wtman shell-init)"
+```
+
+The `command` prefix bypasses the currently loaded `wtman` shell function and reads the latest integration directly from the CLI. If `command wtman` behaves correctly but plain `wtman` does not, the shell is still using an older copy of the function; run the command above or start a new shell. No build is required.
+
 ## Commands
 
 ```sh

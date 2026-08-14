@@ -287,9 +287,10 @@ test('shell-init prints a shell function that wraps switch', async () => {
   await run(['shell-init'], context.runtime);
 
   assert.match(context.stdout, /wtman\(\) \{/);
-  assert.match(context.stdout, /command wtman --default-print-path/);
-  assert.match(context.stdout, /command wtman switch --print-path/);
+  assert.match(context.stdout, /command wtman --default-write-path "\$wtman_target_file"/);
+  assert.match(context.stdout, /command wtman switch --write-path "\$wtman_target_file"/);
   assert.match(context.stdout, /command wtman new --write-path "\$wtman_target_file"/);
+  assert.doesNotMatch(context.stdout, /wtman_target="\$\(command wtman/);
   assert.match(context.stdout, /cd "\$wtman_target"/);
   assert.equal(context.gitCalls.length, 0);
 });
@@ -354,6 +355,29 @@ test('default print path outputs selected path when config exists', async () => 
   await run(['--default-print-path'], context.runtime);
 
   assert.equal(context.stdout, '/repo\n');
+});
+
+test('default write path keeps the interactive menu on stdout', async () => {
+  const context = await makeTempRuntime({
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'selected-worktree');
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['--default-write-path', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
+  assert.equal(context.menuCalls[0].options.output, context.runtime.stdout);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
 });
 
 test('default command can create a new worktree from the menu shortcut', async () => {
@@ -1463,6 +1487,23 @@ test('switch --print-path prints only the selected path to stdout', async () => 
 
   assert.equal(context.stdout, '/repo\n');
   assert.equal(context.openShellCalls.length, 0);
+});
+
+test('switch --write-path keeps the interactive menu on stdout', async () => {
+  const context = await makeTempRuntime({
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'selected-worktree');
+
+  await run(['switch', '--write-path', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
+  assert.equal(context.selectCalls[0].options.output, context.runtime.stdout);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
 });
 
 test('switch command prints a worktree path by branch name without prompting for selection', async () => {

@@ -338,7 +338,8 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
 } = {}) {
   if (confirm) {
     const shouldRemove = await runtime.prompts.confirm(
-      `Remove worktree ${displayPath(selected.path, runtime.homeDir)}?`
+      `Remove worktree ${displayPath(selected.path, runtime.homeDir)}?`,
+      { output }
     );
 
     if (!shouldRemove) {
@@ -385,7 +386,8 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
     }
 
     const shouldForce = await runtime.prompts.confirm(
-      `Worktree contains modified or untracked files. Force remove ${displayPath(selected.path, runtime.homeDir)}?`
+      `Worktree contains modified or untracked files. Force remove ${displayPath(selected.path, runtime.homeDir)}?`,
+      { output }
     );
 
     if (!shouldForce) {
@@ -400,19 +402,23 @@ async function removeSelectedWorktree(runtime, repo, config, selected, {
   return 'removed';
 }
 
-async function promptConfig(runtime, repoName, currentConfig = defaultConfig(repoName)) {
+async function promptConfig(runtime, repoName, currentConfig = defaultConfig(repoName), { output = runtime.stdout } = {}) {
   return {
     worktreeDir: await runtime.prompts.ask('Worktree directory', {
-      defaultValue: currentConfig.worktreeDir
+      defaultValue: currentConfig.worktreeDir,
+      output
     }),
     setupCommand: await runtime.prompts.ask('Setup command', {
-      defaultValue: currentConfig.setupCommand
+      defaultValue: currentConfig.setupCommand,
+      output
     }),
     startCommand: await runtime.prompts.ask('Start command', {
-      defaultValue: currentConfig.startCommand
+      defaultValue: currentConfig.startCommand,
+      output
     }),
     cleanupCommand: await runtime.prompts.ask('Cleanup command', {
-      defaultValue: currentConfig.cleanupCommand
+      defaultValue: currentConfig.cleanupCommand,
+      output
     })
   };
 }
@@ -431,7 +437,7 @@ export async function configureProject(runtime, { forceEdit = false, output = ru
     return existing.config;
   }
 
-  const nextConfig = await promptConfig(runtime, repo.repoName, existing.config);
+  const nextConfig = await promptConfig(runtime, repo.repoName, existing.config, { output });
   await writeConfig(runtime, repo.repoName, nextConfig);
   output.write(`Saved config for ${repo.repoName}.\n`);
   return nextConfig;
@@ -443,7 +449,7 @@ export async function defaultProjectCommand(runtime) {
 
   if (!existing.exists) {
     runtime.stdout.write(`No wtman config found for ${repo.repoName}. Starting setup.\n`);
-    const nextConfig = await promptConfig(runtime, repo.repoName, existing.config);
+    const nextConfig = await promptConfig(runtime, repo.repoName, existing.config, { output: runtime.stdout });
     await writeConfig(runtime, repo.repoName, nextConfig);
     runtime.stdout.write(`Saved config for ${repo.repoName}.\n`);
     return;
@@ -452,7 +458,7 @@ export async function defaultProjectCommand(runtime) {
   await defaultProjectMenu(runtime, { repo });
 }
 
-export async function defaultProjectSwitchPath(runtime) {
+export async function defaultProjectSwitchPath(runtime, { writePath = '' } = {}) {
   const repo = await discoverRepo(runtime);
   const existing = await readConfig(runtime, repo.repoName);
 
@@ -460,26 +466,26 @@ export async function defaultProjectSwitchPath(runtime) {
     return;
   }
 
-  await defaultProjectMenu(runtime, { printPath: true, repo });
+  await defaultProjectMenu(runtime, { printPath: !writePath, writePath, repo });
 }
 
-async function ensureProjectConfig(runtime, repo) {
+async function ensureProjectConfig(runtime, repo, { output = runtime.stdout } = {}) {
   const existing = await readConfig(runtime, repo.repoName);
 
   if (existing.exists) {
     return existing.config;
   }
 
-  runtime.stdout.write(`No wtman config found for ${repo.repoName}. Starting setup.\n`);
-  const nextConfig = await promptConfig(runtime, repo.repoName, existing.config);
+  output.write(`No wtman config found for ${repo.repoName}. Starting setup.\n`);
+  const nextConfig = await promptConfig(runtime, repo.repoName, existing.config, { output });
   await writeConfig(runtime, repo.repoName, nextConfig);
-  runtime.stdout.write(`Saved config for ${repo.repoName}.\n`);
+  output.write(`Saved config for ${repo.repoName}.\n`);
   return nextConfig;
 }
 
-async function selectWorktree(runtime, repo, worktrees, label) {
+async function selectWorktree(runtime, repo, worktrees, label, { output = runtime.stdout } = {}) {
   const worktreeSelect = await worktreeChoices(runtime, repo, worktrees);
-  return runtime.prompts.select(label, worktreeSelect.choices, { header: worktreeSelect.header });
+  return runtime.prompts.select(label, worktreeSelect.choices, { header: worktreeSelect.header, output });
 }
 
 function menuWorktreeName(value) {
@@ -492,14 +498,20 @@ function menuWorktreeName(value) {
   return assertSafeWorktreeName(name);
 }
 
-async function promptMenuWorktreeName(runtime) {
+async function promptMenuWorktreeName(runtime, { output = runtime.stdout } = {}) {
   return runtime.prompts.ask('Worktree name (blank for auto)', {
     defaultValue: '',
-    validate: menuWorktreeName
+    validate: menuWorktreeName,
+    output
   });
 }
 
-function writeSelectedWorktree(runtime, selected, { printPath = false } = {}) {
+async function writeSelectedWorktree(runtime, selected, { printPath = false, writePath = '' } = {}) {
+  if (writePath) {
+    await runtime.fs.writeFile(writePath, `${selected.path}\n`, 'utf8');
+    return;
+  }
+
   if (printPath) {
     runtime.stdout.write(`${selected.path}\n`);
     return;
@@ -509,7 +521,7 @@ function writeSelectedWorktree(runtime, selected, { printPath = false } = {}) {
   runtime.stderr.write('To cd directly with `wtman switch`, run `eval "$(wtman shell-init)"` in your shell startup file.\n');
 }
 
-async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
+async function defaultProjectMenu(runtime, { printPath = false, writePath = '', repo } = {}) {
   if (repo.worktrees.length === 0) {
     throw new WtmanError('no worktrees found to switch to');
   }
@@ -563,7 +575,8 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
           {
             header: worktreeSelect.header,
             updatePromise,
-            mapUpdate
+            mapUpdate,
+            output
           }
         )
         : {
@@ -571,7 +584,7 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
           value: await runtime.prompts.select(
             'Select a worktree to switch to:',
             worktreeSelect.choices,
-            { header: worktreeSelect.header }
+            { header: worktreeSelect.header, output }
           )
         };
 
@@ -588,19 +601,21 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
       }
 
       if (menuResult.action === 'switch') {
-        writeSelectedWorktree(runtime, menuResult.value, { printPath });
+        await writeSelectedWorktree(runtime, menuResult.value, { printPath, writePath });
         return;
       }
 
       if (menuResult.action === 'quit') {
         if (printPath) {
           runtime.stdout.write(`${runtime.cwd}\n`);
+        } else if (writePath) {
+          await runtime.fs.writeFile(writePath, `${runtime.cwd}\n`, 'utf8');
         }
         return;
       }
 
       if (menuResult.action === 'new') {
-        const requestedName = await promptMenuWorktreeName(runtime);
+        const requestedName = await promptMenuWorktreeName(runtime, { output });
         const targetPath = await createWorktree(runtime, {
           requestedName,
           output,
@@ -621,7 +636,7 @@ async function defaultProjectMenu(runtime, { printPath = false, repo } = {}) {
           continue;
         }
 
-        const config = await ensureProjectConfig(runtime, currentRepo);
+        const config = await ensureProjectConfig(runtime, currentRepo, { output });
         const result = await removeSelectedWorktree(runtime, currentRepo, config, menuResult.value, { output });
 
         if (result === 'removed') {
@@ -652,7 +667,7 @@ export async function createWorktree(runtime, {
   commandOutput = runtime.stdout
 } = {}) {
   const repo = await discoverRepo(runtime);
-  const config = await ensureProjectConfig(runtime, repo);
+  const config = await ensureProjectConfig(runtime, repo, { output });
   const name = requestedName ? assertSafeWorktreeName(requestedName) : generateWorktreeName(repo.repoName, repo.worktrees);
   const branch = name;
   const baseDir = resolveWorktreeDir(runtime, config);
@@ -790,8 +805,14 @@ export async function startProjectWorktree(runtime, { requestedName } = {}) {
   await runtime.shell(config.startCommand, { cwd: selected.path });
 }
 
-export async function switchProjectWorktree(runtime, { printPath = false, repo: discoveredRepo, requestedName } = {}) {
+export async function switchProjectWorktree(runtime, {
+  printPath = false,
+  writePath = '',
+  repo: discoveredRepo,
+  requestedName
+} = {}) {
   const repo = discoveredRepo || (await discoverRepo(runtime));
+  const output = printPath ? runtime.stderr : runtime.stdout;
 
   if (repo.worktrees.length === 0) {
     throw new WtmanError('no worktrees found to switch to');
@@ -799,7 +820,7 @@ export async function switchProjectWorktree(runtime, { printPath = false, repo: 
 
   const selected = requestedName
     ? resolveWorktreeReference(repo.worktrees, requestedName)
-    : await selectWorktree(runtime, repo, repo.worktrees, 'Select a worktree to switch to:');
+    : await selectWorktree(runtime, repo, repo.worktrees, 'Select a worktree to switch to:', { output });
 
-  writeSelectedWorktree(runtime, selected, { printPath });
+  await writeSelectedWorktree(runtime, selected, { printPath, writePath });
 }
