@@ -278,6 +278,23 @@ test('help command writes usage without requiring git', async () => {
   assert.match(context.stdout, /wtman new/);
   assert.match(context.stdout, /wtman switch/);
   assert.match(context.stdout, /wtman shell-init/);
+  assert.match(context.stdout, /--shell-target-file/);
+  assert.equal(context.gitCalls.length, 0);
+});
+
+test('shell target option validates its file and supported commands', async () => {
+  const context = await makeTempRuntime();
+  const targetFile = path.join(context.tempDir, 'shell-target');
+
+  await assert.rejects(
+    () => run(['--shell-target-file'], context.runtime),
+    /usage: wtman --shell-target-file <file>/
+  );
+  await assert.rejects(
+    () => run(['--shell-target-file', targetFile, 'list'], context.runtime),
+    /only supports the default, switch, and new commands/
+  );
+
   assert.equal(context.gitCalls.length, 0);
 });
 
@@ -287,9 +304,9 @@ test('shell-init prints a shell function that wraps switch', async () => {
   await run(['shell-init'], context.runtime);
 
   assert.match(context.stdout, /wtman\(\) \{/);
-  assert.match(context.stdout, /command wtman --default-write-path "\$wtman_target_file"/);
-  assert.match(context.stdout, /command wtman switch --write-path "\$wtman_target_file"/);
-  assert.match(context.stdout, /command wtman new --write-path "\$wtman_target_file"/);
+  assert.match(context.stdout, /command wtman --shell-target-file "\$wtman_target_file"/);
+  assert.match(context.stdout, /command wtman --shell-target-file "\$wtman_target_file" "\$wtman_subcommand" "\$@"/);
+  assert.doesNotMatch(context.stdout, /--default-write-path|--write-path/);
   assert.doesNotMatch(context.stdout, /wtman_target="\$\(command wtman/);
   assert.match(context.stdout, /cd "\$wtman_target"/);
   assert.equal(context.gitCalls.length, 0);
@@ -376,6 +393,70 @@ test('default write path keeps the interactive menu on stdout', async () => {
 
   assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
   assert.equal(context.menuCalls[0].options.output, context.runtime.stdout);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
+});
+
+test('global shell target keeps the default interactive menu on stdout', async () => {
+  const context = await makeTempRuntime({
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'selected-worktree');
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['--shell-target-file', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
+  assert.equal(context.menuCalls[0].options.output, context.runtime.stdout);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
+});
+
+test('global shell target leaves its file empty when default setup is required', async () => {
+  const context = await makeTempRuntime({
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'shell-target');
+  await fs.writeFile(targetFile, '', 'utf8');
+
+  await run(['--shell-target-file', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), '');
+  assert.equal(context.menuCalls.length, 0);
+  assert.equal(context.askCalls.length, 0);
+  assert.equal(context.stdout, '');
+});
+
+test('global shell target writes the current directory when the default menu quits', async () => {
+  const context = await makeTempRuntime({
+    menuResults: [{ action: 'quit' }],
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'shell-target');
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['--shell-target-file', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), `${context.runtime.cwd}\n`);
   assert.equal(context.stdout, '');
   assert.equal(context.stderr, '');
 });
@@ -1002,6 +1083,38 @@ test('new command can write created worktree path for shell integration', async 
   assert.match(context.stdout, /Created worktree:/);
 });
 
+test('global shell target writes a newly created worktree path', async () => {
+  const homeDir = path.join(os.tmpdir(), 'wtman-test-home');
+  const context = await makeTempRuntime({
+    homeDir,
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: PRIMARY_LIST },
+      {
+        args: ['show-ref', '--verify', '--quiet', 'refs/heads/my-feature'],
+        cwd: '/repo',
+        error: { exitCode: 1 }
+      },
+      {
+        args: ['worktree', 'add', '-b', 'my-feature', path.join(homeDir, '.worktrees', 'repo', 'my-feature'), 'HEAD'],
+        cwd: '/repo'
+      }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'shell-target');
+  await writeConfig(context.runtime, 'repo', {
+    worktreeDir: '~/.worktrees/repo',
+    setupCommand: '',
+    startCommand: '',
+    cleanupCommand: ''
+  });
+
+  await run(['--shell-target-file', targetFile, 'new', 'my-feature'], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), `${path.join(homeDir, '.worktrees', 'repo', 'my-feature')}\n`);
+  assert.match(context.stdout, /Created worktree:/);
+});
+
 test('new command rejects more than one name argument', async () => {
   const context = await makeTempRuntime();
 
@@ -1437,7 +1550,7 @@ test('start command starts a worktree by branch name without prompting for selec
   ]);
 });
 
-test('switchProjectWorktree prints the selected worktree path', async () => {
+test('switchProjectWorktree returns the selected path without transporting it', async () => {
   const context = await makeTempRuntime({
     gitResponses: [
       { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
@@ -1445,11 +1558,12 @@ test('switchProjectWorktree prints the selected worktree path', async () => {
     ]
   });
 
-  await switchProjectWorktree(context.runtime);
+  const targetPath = await switchProjectWorktree(context.runtime);
 
+  assert.equal(targetPath, '/repo');
   assert.equal(context.openShellCalls.length, 0);
-  assert.match(context.stdout, /Selected worktree: \/repo/);
-  assert.match(context.stderr, /wtman shell-init/);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
 });
 
 test('switchProjectWorktree uses aligned table rows for prompt choices', async () => {
@@ -1499,6 +1613,23 @@ test('switch --write-path keeps the interactive menu on stdout', async () => {
   const targetFile = path.join(context.tempDir, 'selected-worktree');
 
   await run(['switch', '--write-path', targetFile], context.runtime);
+
+  assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
+  assert.equal(context.selectCalls[0].options.output, context.runtime.stdout);
+  assert.equal(context.stdout, '');
+  assert.equal(context.stderr, '');
+});
+
+test('global shell target keeps the switch interface on stdout', async () => {
+  const context = await makeTempRuntime({
+    gitResponses: [
+      { args: ['rev-parse', '--show-toplevel'], stdout: '/repo\n' },
+      { args: ['worktree', 'list', '--porcelain'], cwd: '/repo', stdout: FEATURE_LIST }
+    ]
+  });
+  const targetFile = path.join(context.tempDir, 'selected-worktree');
+
+  await run(['--shell-target-file', targetFile, 'switch'], context.runtime);
 
   assert.equal(await fs.readFile(targetFile, 'utf8'), '/repo\n');
   assert.equal(context.selectCalls[0].options.output, context.runtime.stdout);

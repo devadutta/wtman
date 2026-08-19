@@ -443,30 +443,26 @@ export async function configureProject(runtime, { forceEdit = false, output = ru
   return nextConfig;
 }
 
-export async function defaultProjectCommand(runtime) {
+export async function defaultProjectCommand(runtime, {
+  configureMissing = true,
+  output = runtime.stdout
+} = {}) {
   const repo = await discoverRepo(runtime);
   const existing = await readConfig(runtime, repo.repoName);
 
   if (!existing.exists) {
-    runtime.stdout.write(`No wtman config found for ${repo.repoName}. Starting setup.\n`);
-    const nextConfig = await promptConfig(runtime, repo.repoName, existing.config, { output: runtime.stdout });
+    if (!configureMissing) {
+      return { action: 'missing-config' };
+    }
+
+    output.write(`No wtman config found for ${repo.repoName}. Starting setup.\n`);
+    const nextConfig = await promptConfig(runtime, repo.repoName, existing.config, { output });
     await writeConfig(runtime, repo.repoName, nextConfig);
-    runtime.stdout.write(`Saved config for ${repo.repoName}.\n`);
-    return;
+    output.write(`Saved config for ${repo.repoName}.\n`);
+    return { action: 'configured' };
   }
 
-  await defaultProjectMenu(runtime, { repo });
-}
-
-export async function defaultProjectSwitchPath(runtime, { writePath = '' } = {}) {
-  const repo = await discoverRepo(runtime);
-  const existing = await readConfig(runtime, repo.repoName);
-
-  if (!existing.exists) {
-    return;
-  }
-
-  await defaultProjectMenu(runtime, { printPath: !writePath, writePath, repo });
+  return defaultProjectMenu(runtime, { output, repo });
 }
 
 async function ensureProjectConfig(runtime, repo, { output = runtime.stdout } = {}) {
@@ -506,27 +502,11 @@ async function promptMenuWorktreeName(runtime, { output = runtime.stdout } = {})
   });
 }
 
-async function writeSelectedWorktree(runtime, selected, { printPath = false, writePath = '' } = {}) {
-  if (writePath) {
-    await runtime.fs.writeFile(writePath, `${selected.path}\n`, 'utf8');
-    return;
-  }
-
-  if (printPath) {
-    runtime.stdout.write(`${selected.path}\n`);
-    return;
-  }
-
-  runtime.stdout.write(`Selected worktree: ${selected.path}\n`);
-  runtime.stderr.write('To cd directly with `wtman switch`, run `eval "$(wtman shell-init)"` in your shell startup file.\n');
-}
-
-async function defaultProjectMenu(runtime, { printPath = false, writePath = '', repo } = {}) {
+async function defaultProjectMenu(runtime, { output = runtime.stdout, repo } = {}) {
   if (repo.worktrees.length === 0) {
     throw new WtmanError('no worktrees found to switch to');
   }
 
-  const output = printPath ? runtime.stderr : runtime.stdout;
   let currentRepo = repo;
   let pullRequestsByBranch = await getPullRequestsByBranch(runtime, currentRepo.currentRoot, {
     repoName: currentRepo.repoName,
@@ -601,30 +581,20 @@ async function defaultProjectMenu(runtime, { printPath = false, writePath = '', 
       }
 
       if (menuResult.action === 'switch') {
-        await writeSelectedWorktree(runtime, menuResult.value, { printPath, writePath });
-        return;
+        return { action: 'switch', path: menuResult.value.path };
       }
 
       if (menuResult.action === 'quit') {
-        if (printPath) {
-          runtime.stdout.write(`${runtime.cwd}\n`);
-        } else if (writePath) {
-          await runtime.fs.writeFile(writePath, `${runtime.cwd}\n`, 'utf8');
-        }
-        return;
+        return { action: 'quit' };
       }
 
       if (menuResult.action === 'new') {
         const requestedName = await promptMenuWorktreeName(runtime, { output });
-        const targetPath = await createWorktree(runtime, {
+        await createWorktree(runtime, {
           requestedName,
           output,
           commandOutput: output
         });
-
-        if (printPath) {
-          output.write(`Created ${displayPath(targetPath, runtime.homeDir)}. Select it and press Enter to switch.\n`);
-        }
 
         currentRepo = await discoverRepo(runtime);
         continue;
@@ -662,7 +632,6 @@ async function defaultProjectMenu(runtime, { printPath = false, writePath = '', 
 
 export async function createWorktree(runtime, {
   requestedName,
-  writePath,
   output = runtime.stdout,
   commandOutput = runtime.stdout
 } = {}) {
@@ -688,10 +657,6 @@ export async function createWorktree(runtime, {
   }
 
   output.write(`Created worktree: ${targetPath}\n`);
-  if (writePath) {
-    await runtime.fs.writeFile(writePath, `${targetPath}\n`, 'utf8');
-  }
-
   return targetPath;
 }
 
@@ -806,13 +771,11 @@ export async function startProjectWorktree(runtime, { requestedName } = {}) {
 }
 
 export async function switchProjectWorktree(runtime, {
-  printPath = false,
-  writePath = '',
+  output = runtime.stdout,
   repo: discoveredRepo,
   requestedName
 } = {}) {
   const repo = discoveredRepo || (await discoverRepo(runtime));
-  const output = printPath ? runtime.stderr : runtime.stdout;
 
   if (repo.worktrees.length === 0) {
     throw new WtmanError('no worktrees found to switch to');
@@ -822,5 +785,5 @@ export async function switchProjectWorktree(runtime, {
     ? resolveWorktreeReference(repo.worktrees, requestedName)
     : await selectWorktree(runtime, repo, repo.worktrees, 'Select a worktree to switch to:', { output });
 
-  await writeSelectedWorktree(runtime, selected, { printPath, writePath });
+  return selected.path;
 }

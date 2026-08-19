@@ -64,6 +64,8 @@ eval "$(command wtman shell-init)"
 
 The `command` prefix bypasses the currently loaded `wtman` shell function and reads the latest integration directly from the CLI. If `command wtman` behaves correctly but plain `wtman` does not, the shell is still using an older copy of the function; run the command above or start a new shell. No build is required.
 
+The generated wrapper uses the global `--shell-target-file <file>` option for commands that change directories. The interactive interface remains attached to the terminal while only the resulting directory is written to that file, so shell integration cannot alter Ink's TTY detection or color rendering. The option works with the default command, `switch`, and `new`; it is primarily plumbing for `wtman shell-init` rather than something you need to invoke manually.
+
 ## Commands
 
 ```sh

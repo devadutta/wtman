@@ -1,10 +1,13 @@
-import { cleanProjectWorktrees, configureProject, createWorktree, defaultProjectCommand, defaultProjectSwitchPath, listProjectWorktrees, removeProjectWorktree, startProjectWorktree, switchProjectWorktree } from './commands.js';
+import { cleanProjectWorktrees, configureProject, createWorktree, defaultProjectCommand, listProjectWorktrees, removeProjectWorktree, startProjectWorktree, switchProjectWorktree } from './commands.js';
 import { createRuntime } from './runtime.js';
 import { WtmanError } from './errors.js';
+import { extractShellTarget, SHELL_INIT, SHELL_TARGET_OPTION, writeShellTarget } from './shell-integration.js';
 
 const HELP = `wtman
 
 Usage:
+  wtman --shell-target-file <file> [switch|new] [name]
+                  Write a directory-changing result for shell integration
   wtman            Set up config on first run, then switch worktrees
   wtman config     Create or edit config for the current Git repository
   wtman new [name] Create a new worktree
@@ -20,75 +23,41 @@ Usage:
   wtman help       Show this help
 `;
 
-const SHELL_INIT = `wtman() {
-  if [ "$#" -eq 0 ]; then
-    local wtman_target_file
-    local wtman_target
-    local wtman_status
-    wtman_target_file="$(mktemp -t wtman-switch.XXXXXX)" || return $?
-    command wtman --default-write-path "$wtman_target_file"
-    wtman_status=$?
-    if [ "$wtman_status" -eq 0 ] && [ -s "$wtman_target_file" ]; then
-      wtman_target="$(cat "$wtman_target_file")"
-      rm -f "$wtman_target_file"
-      if [ -n "$wtman_target" ]; then
-        cd "$wtman_target" || return $?
-      fi
-    else
-      rm -f "$wtman_target_file"
-      if [ "$wtman_status" -eq 0 ]; then
-        command wtman
-        return $?
-      fi
-    fi
-    return "$wtman_status"
-  elif [ "$1" = "switch" ]; then
-    shift
-    local wtman_target_file
-    local wtman_target
-    local wtman_status
-    wtman_target_file="$(mktemp -t wtman-switch.XXXXXX)" || return $?
-    command wtman switch --write-path "$wtman_target_file" "$@"
-    wtman_status=$?
-    if [ "$wtman_status" -eq 0 ] && [ -s "$wtman_target_file" ]; then
-      wtman_target="$(cat "$wtman_target_file")"
-      rm -f "$wtman_target_file"
-      if [ -n "$wtman_target" ]; then
-        cd "$wtman_target" || return $?
-      fi
-    else
-      rm -f "$wtman_target_file"
-    fi
-    return "$wtman_status"
-  elif [ "$1" = "new" ]; then
-    shift
-    local wtman_target_file
-    local wtman_target
-    local wtman_status
-    wtman_target_file="$(mktemp -t wtman-new.XXXXXX)" || return $?
-    command wtman new --write-path "$wtman_target_file" "$@"
-    wtman_status=$?
-    if [ "$wtman_status" -eq 0 ] && [ -s "$wtman_target_file" ]; then
-      wtman_target="$(cat "$wtman_target_file")"
-      rm -f "$wtman_target_file"
-      if [ -n "$wtman_target" ]; then
-        cd "$wtman_target" || return $?
-      fi
-    else
-      rm -f "$wtman_target_file"
-    fi
-    return "$wtman_status"
-  else
-    command wtman "$@"
-  fi
+function defaultResultPath(runtime, result) {
+  if (result?.action === 'switch') {
+    return result.path;
+  }
+
+  if (result?.action === 'quit') {
+    return runtime.cwd;
+  }
+
+  return '';
 }
-`;
+
+function reportSelectedWorktree(runtime, targetPath) {
+  runtime.stdout.write(`Selected worktree: ${targetPath}\n`);
+  runtime.stderr.write('To cd directly with `wtman switch`, run `eval "$(command wtman shell-init)"` in your shell startup file.\n');
+}
 
 export async function run(argv = [], runtime = createRuntime()) {
-  const [command, ...args] = argv;
+  const { args: commandArgs, targetFile: shellTargetFile } = extractShellTarget(argv);
+  const [command, ...args] = commandArgs;
+
+  if (shellTargetFile && command && command !== 'switch' && command !== 'new') {
+    throw new WtmanError(`${SHELL_TARGET_OPTION} only supports the default, switch, and new commands`, { exitCode: 2 });
+  }
 
   if (!command) {
-    await defaultProjectCommand(runtime);
+    const result = await defaultProjectCommand(runtime, { configureMissing: !shellTargetFile });
+    const targetPath = defaultResultPath(runtime, result);
+
+    if (shellTargetFile) {
+      await writeShellTarget(runtime, shellTargetFile, targetPath);
+    } else if (result?.action === 'switch') {
+      reportSelectedWorktree(runtime, targetPath);
+    }
+
     return;
   }
 
@@ -98,7 +67,16 @@ export async function run(argv = [], runtime = createRuntime()) {
   }
 
   if (command === '--default-print-path') {
-    await defaultProjectSwitchPath(runtime);
+    const result = await defaultProjectCommand(runtime, {
+      configureMissing: false,
+      output: runtime.stderr
+    });
+    const targetPath = defaultResultPath(runtime, result);
+
+    if (targetPath) {
+      runtime.stdout.write(`${targetPath}\n`);
+    }
+
     return;
   }
 
@@ -107,7 +85,8 @@ export async function run(argv = [], runtime = createRuntime()) {
       throw new WtmanError('usage: wtman', { exitCode: 2 });
     }
 
-    await defaultProjectSwitchPath(runtime, { writePath: args[0] });
+    const result = await defaultProjectCommand(runtime, { configureMissing: false });
+    await writeShellTarget(runtime, args[0], defaultResultPath(runtime, result));
     return;
   }
 
@@ -117,7 +96,7 @@ export async function run(argv = [], runtime = createRuntime()) {
   }
 
   if (command === 'new') {
-    let writePath = '';
+    let legacyTargetFile = '';
     let requestedName = args[0];
 
     if (args[0] === '--write-path') {
@@ -125,7 +104,7 @@ export async function run(argv = [], runtime = createRuntime()) {
         throw new WtmanError('usage: wtman new [name]', { exitCode: 2 });
       }
 
-      writePath = args[1];
+      legacyTargetFile = args[1];
       requestedName = args[2];
 
       if (args.length > 3) {
@@ -135,7 +114,12 @@ export async function run(argv = [], runtime = createRuntime()) {
       throw new WtmanError('usage: wtman new [name]', { exitCode: 2 });
     }
 
-    await createWorktree(runtime, { requestedName, writePath });
+    if (shellTargetFile && legacyTargetFile) {
+      throw new WtmanError(`cannot combine ${SHELL_TARGET_OPTION} with --write-path`, { exitCode: 2 });
+    }
+
+    const targetPath = await createWorktree(runtime, { requestedName });
+    await writeShellTarget(runtime, shellTargetFile || legacyTargetFile, targetPath);
     return;
   }
 
@@ -169,7 +153,7 @@ export async function run(argv = [], runtime = createRuntime()) {
 
   if (command === 'switch') {
     let printPath = false;
-    let writePath = '';
+    let legacyTargetFile = '';
     let requestedName;
 
     for (let index = 0; index < args.length; index += 1) {
@@ -178,10 +162,10 @@ export async function run(argv = [], runtime = createRuntime()) {
       if (arg === '--print-path') {
         printPath = true;
       } else if (arg === '--write-path') {
-        writePath = args[index + 1] || '';
+        legacyTargetFile = args[index + 1] || '';
         index += 1;
 
-        if (!writePath) {
+        if (!legacyTargetFile) {
           throw new WtmanError('usage: wtman switch [name]', { exitCode: 2 });
         }
       } else if (!requestedName) {
@@ -191,11 +175,23 @@ export async function run(argv = [], runtime = createRuntime()) {
       }
     }
 
-    if (printPath && writePath) {
+    if ((shellTargetFile && legacyTargetFile) || (printPath && (shellTargetFile || legacyTargetFile))) {
       throw new WtmanError('usage: wtman switch [name]', { exitCode: 2 });
     }
 
-    await switchProjectWorktree(runtime, { printPath, writePath, requestedName });
+    const targetPath = await switchProjectWorktree(runtime, {
+      output: printPath ? runtime.stderr : runtime.stdout,
+      requestedName
+    });
+
+    if (printPath) {
+      runtime.stdout.write(`${targetPath}\n`);
+    } else if (shellTargetFile || legacyTargetFile) {
+      await writeShellTarget(runtime, shellTargetFile || legacyTargetFile, targetPath);
+    } else {
+      reportSelectedWorktree(runtime, targetPath);
+    }
+
     return;
   }
 
